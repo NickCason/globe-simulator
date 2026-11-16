@@ -3,6 +3,7 @@
 import { decodeTile } from './mvt.js'
 
 export const Z = 14                                    // OpenFreeMap's deepest zoom: every building and road is here
+export const COARSE = 12                               // a light, wide layer beneath: main roads, water and parks, no buildings
 const TILEJSON = 'https://tiles.openfreemap.org/planet'
 const CACHE = 'terralogue-tiles-v1'
 const LAYERS = ['water', 'park', 'landcover', 'landuse', 'building', 'transportation', 'transportation_name', 'housenumber', 'waterway']
@@ -25,9 +26,9 @@ async function cached(url) {
   return res
 }
 
-// Which z14 tiles cover a box of `half` metres round a point.
-export function tilesAround(lat, lon, halfX, halfY = halfX) {
-  const n = 2 ** Z, k = 111320 * Math.cos(lat * Math.PI / 180)
+// Which tiles (of zoom z) cover a box of `half` metres round a point.
+export function tilesAround(lat, lon, halfX, halfY = halfX, z = Z) {
+  const n = 2 ** z, k = 111320 * Math.cos(lat * Math.PI / 180)
   const tx = l => Math.floor((l + 180) / 360 * n)
   const ty = a => Math.floor((1 - Math.log(Math.tan(a * Math.PI / 180) + 1 / Math.cos(a * Math.PI / 180)) / Math.PI) / 2 * n)
   const x0 = tx(lon - halfX / k), x1 = tx(lon + halfX / k), y0 = ty(lat + halfY / 110540), y1 = ty(lat - halfY / 110540)
@@ -35,25 +36,25 @@ export function tilesAround(lat, lon, halfX, halfY = halfX) {
   for (let x = x0; x <= x1; x++) for (let y = y0; y <= y1; y++) out.push([x, y])
   return out
 }
-export const tileLatLon = (x, y, fx = 0, fy = 0) => {      // a point inside tile (x, y), as fractions of the tile
-  const n = 2 ** Z, wx = (x + fx) / n, wy = (y + fy) / n
+export const tileLatLon = (x, y, fx = 0, fy = 0, z = Z) => {      // a point inside tile (x, y), as fractions of the tile
+  const n = 2 ** z, wx = (x + fx) / n, wy = (y + fy) / n
   return { lat: Math.atan(Math.sinh(Math.PI * (1 - 2 * wy))) * 180 / Math.PI, lon: wx * 360 - 180 }
 }
 
 /** Loads one tile and turns it into features in metres east (x) and south (y) of `origin` ({lat, lon}). */
-export async function loadTile(x, y, origin) {
-  const url = (await getTemplate()).replace('{z}', Z).replace('{x}', x).replace('{y}', y)
+export async function loadTile(x, y, origin, z = Z) {
+  const url = (await getTemplate()).replace('{z}', z).replace('{x}', x).replace('{y}', y)
   const res = await cached(url)
   const layers = decodeTile(new Uint8Array(await res.arrayBuffer()), LAYERS)
   const kx = 111320 * Math.cos(origin.lat * Math.PI / 180), ky = 110540
-  const n = 2 ** Z
+  const n = 2 ** z
   const toM = (ext) => ([px, py]) => {
     const wy = (y + py / ext) / n, lat = Math.atan(Math.sinh(Math.PI * (1 - 2 * wy))) * 180 / Math.PI
     const lon = (x + px / ext) / n * 360 - 180
     return [(lon - origin.lon) * kx, -(lat - origin.lat) * ky]
   }
-  const nw = tileLatLon(x, y), se = tileLatLon(x, y, 1, 1)
-  const out = { x, y, bounds: [(nw.lon - origin.lon) * kx, -(nw.lat - origin.lat) * ky, (se.lon - origin.lon) * kx, -(se.lat - origin.lat) * ky],
+  const nw = tileLatLon(x, y, 0, 0, z), se = tileLatLon(x, y, 1, 1, z)
+  const out = { x, y, z, bounds: [(nw.lon - origin.lon) * kx, -(nw.lat - origin.lat) * ky, (se.lon - origin.lon) * kx, -(se.lat - origin.lat) * ky],
                 water: [], parks: [], buildings: [], roads: [], rail: [], names: [], numbers: [], streams: [] }
   for (const [name, layer] of Object.entries(layers)) {
     const m = toM(layer.extent)

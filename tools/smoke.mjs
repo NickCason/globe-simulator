@@ -4,11 +4,17 @@
 // The street tiles come from a saved fixture; "read about it" reads the live open web (Wikipedia, Open-Meteo…).
 import { chromium } from 'playwright'
 import { spawn } from 'node:child_process'
+import { createServer } from 'node:net'
 import { readFileSync, mkdirSync } from 'node:fs'
 
-const PORT = 5199, URL_ = `http://127.0.0.1:${PORT}/`
+// a free port (others may be taken by other projects' servers), and our own server, stopped with its whole group at the end
+const PORT = await new Promise(ok => { const t = createServer().listen(0, '127.0.0.1', () => { const p = t.address().port; t.close(() => ok(p)) }) })
+const URL_ = `http://127.0.0.1:${PORT}/`
 mkdirSync('shots', { recursive: true })
-const server = spawn('npx', ['vite', 'preview', '--port', String(PORT), '--strictPort'], { stdio: 'ignore' })
+const server = spawn('npx', ['vite', 'preview', '--host', '127.0.0.1', '--port', String(PORT), '--strictPort'], { stdio: 'ignore', detached: true })
+const stop = () => { try { process.kill(-server.pid) } catch { /* gone */ } }
+process.on('exit', stop)
+for (const sig of ['SIGTERM', 'SIGINT']) process.on(sig, () => { stop(); process.exit(1) })
 const sleep = ms => new Promise(r => setTimeout(r, ms))
 for (let i = 0; i < 60; i++) { try { await fetch(URL_); break } catch { await sleep(250) } }
 
@@ -20,7 +26,7 @@ const ctx = await browser.newContext({ viewport: { width: 390, height: 844 }, is
 const TILE = readFileSync('test/fixtures/toledo-14-4389-6102.pbf')
 await ctx.route('https://tiles.openfreemap.org/**', route => route.request().url().endsWith('/planet')
   ? route.fulfill({ contentType: 'application/json', body: JSON.stringify({ tiles: ['https://tiles.openfreemap.org/test/{z}/{x}/{y}.pbf'] }) })
-  : route.fulfill({ contentType: 'application/vnd.mapbox-vector-tile', body: TILE }))
+  : route.fulfill({ contentType: 'application/vnd.mapbox-vector-tile', body: /\/14\/\d+\/\d+\.pbf$/.test(route.request().url()) ? TILE : Buffer.alloc(0) }))
 const pg = await ctx.newPage()
 pg.on('pageerror', e => errors.push('pageerror: ' + e.message))
 pg.on('console', m => { if (m.type() === 'error') errors.push('console: ' + m.text()) })
@@ -164,6 +170,6 @@ const after = await count()
 console.log('places/entries before', before, 'after restore', after)
 if (JSON.stringify(before) !== JSON.stringify(after)) errors.push(`backup lost something: ${before} -> ${after}`)
 await shot('16-restored')
-await browser.close(); server.kill()
+await browser.close(); stop()
 console.log(errors.length ? 'FAILED\n' + errors.join('\n') : 'ok: no errors')
 process.exit(errors.length ? 1 : 0)
