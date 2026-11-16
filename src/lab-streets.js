@@ -1,4 +1,4 @@
-// A draft (lab/streets.html): the street map drawn on the globe itself, not in a separate view. Around a city, the
+// A draft (lab/index.html, at terralogue.app/lab): the street map drawn on the globe itself, not in a separate view. Around a city, the
 // OpenFreeMap tiles are inked into two pictures in the sketch style (a wide one with the main roads, a close one with
 // every street and building) and laid on the globe's surface as curved patches that turn with it. They come in as
 // you come down; the relief's exaggeration eases off near the ground, so a few km up the city lies flat beneath you.

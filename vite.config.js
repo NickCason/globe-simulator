@@ -57,7 +57,7 @@ self.addEventListener('fetch', (e) => {
 export default defineConfig({
   base: './',
   // lab/: drafts of things to come, built alongside the app (not linked from it)
-  build: { target: 'es2020', chunkSizeWarningLimit: 900, rollupOptions: { input: { main: 'index.html', streets: 'lab/streets.html' } } },
+  build: { target: 'es2020', chunkSizeWarningLimit: 900, rollupOptions: { input: { main: 'index.html', lab: 'lab/index.html', streets: 'lab/streets.html' } } },
   plugins: [serviceWorker()],
   server: { allowedHosts: true },
 })
