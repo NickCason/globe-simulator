@@ -13,6 +13,7 @@ export function load(url = 'data/places.json') {
   }))
 }
 export const ready = () => !!data
+export const countryName = cc => (data && cc && data.countries[cc]) || null
 
 const town = (d, t) => ({ kind: 'town', name: t[0], lat: t[2] / 100, lon: t[3] / 100, cc: t[4],
                           sub: [t[5], d.countries[t[4]] || t[4]].filter(Boolean).join(', '), pop: t[6] * 1000 })
@@ -66,6 +67,14 @@ function biggest(lat, lon, r) {
   return best
 }
 
+/** The town a spot belongs to: inside a big city, the city (not the district nearest it). { place, km } or null. */
+export function townAt(lat, lon, limit = 40) {
+  const n = nearest(lat, lon, limit)
+  if (!n?.place) return null
+  const big = biggest(lat, lon, Math.max(8, n.km * 1.5))
+  const p = big && big.pop > n.place.pop * 3 ? big : n.place
+  return { place: p, km: km({ lat, lon }, p) }
+}
 /** A short name for a spot: "Lyon", "Near Lyon", or its coordinates when no town is close. */
 export function describe(lat, lon) {
   const n = nearest(lat, lon)

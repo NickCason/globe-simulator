@@ -5,6 +5,7 @@ import { openStreetView } from './streetview.js'
 import * as store from './store.js'
 import { prepare } from './photos.js'
 import * as gaz from './places.js'
+import { makeGuide } from './guide.js'
 
 const INKS = {
   parchment: { name: 'Parchment', paper: '#F3E8D2', ink: '#2B231D', accent: '#B4532F', muted: '#7A6450', park: '#6B7041', water: '#3F6E8C' },
@@ -63,6 +64,7 @@ async function boot() {
   sp?.progress(1)
   await land()
   gaz.load()                                           // names for taps, the lens and search, in the background
+  makeGuideHere()
   if (!S.places.length) setTimeout(hint, calm ? 0 : 1500)
   if ('serviceWorker' in navigator && import.meta.env.PROD) navigator.serviceWorker.register('./sw.js').catch(() => {})
 }
@@ -115,6 +117,7 @@ async function loadLayers() {                          // the map layers' data, 
     const [data, img] = await Promise.all([fetch('data/overlay.json').then(r => r.json()),
       new Promise((ok, no) => { const i = new Image(); i.onload = () => ok(i); i.onerror = no; i.src = 'data/countries.png' })])
     S.g.setOverlay(data, img); S.g.setLayers(S.look.layers)
+    S.overlay = data; S.countryImg = img
   } catch { /* offline on the very first visit: the layers arrive next time */ }
 }
 function pins() {
@@ -122,13 +125,14 @@ function pins() {
     ? { id: p.id, lat: p.lat, lon: p.lon, prec: 'country', label: p.name, glow: true, glowR: p.radius || 3 }
     : { id: p.id, lat: p.lat, lon: p.lon, prec: beenTo(p.id) ? 'address' : 'read', label: p.name })
   if (S.temp) list.push({ id: 'temp', lat: S.temp.lat, lon: S.temp.lon, prec: 'town', label: S.temp.name, always: true, blank: true })
+  for (const g of S.glance || []) list.push({ id: g.id, lat: g.lat, lon: g.lon, prec: 'poi', label: g.label })
   S.g.setPins(list)
   const sel = S.open?.place?.id || (S.temp && 'temp')
   if (sel) S.g.select(sel)
 }
 function paint(t) {
   const r = document.documentElement.style
-  for (const [k, v] of Object.entries({ paper: t.paper, ink: t.ink, accent: t.accent, muted: t.muted })) r.setProperty('--' + k, v)
+  for (const [k, v] of Object.entries({ paper: t.paper, ink: t.ink, accent: t.accent, muted: t.muted, water: t.water })) r.setProperty('--' + k, v)
   document.documentElement.classList.toggle('dark', !!t.dark)
   document.querySelector('meta[name=theme-color]').content = t.paper
 }
@@ -156,7 +160,7 @@ function closeSheet(fromHistory) {
   if (!el.classList.contains('on')) return
   el.classList.remove('on'); document.body.classList.remove('sheeted'); delete document.body.dataset.sheet
   if (S.open?.cleanup) S.open.cleanup()
-  S.open = null; S.temp = null; pins(); S.g.select(null)
+  S.open = null; S.temp = null; S.glance = null; pins(); S.g.select(null)
   if (!fromHistory && history.state?.sheet) { S.ownBack = true; history.back() }   // our own step back: don't act on it
 }
 addEventListener('popstate', () => {
@@ -213,6 +217,7 @@ function offer(spot, { fly = true } = {}) {
   const eyebrow = { country: 'A country', town: 'A town', coords: 'Coordinates', exact: 'Right here' }[spot.kind] || 'A new place?'
   sheet(`<p class="eyebrow">${eyebrow}</p><h2>${esc(spot.name)}</h2><p class="muted small">${esc(spot.sub)}${spot.sub ? ' · ' : ''}${gaz.coords(spot.lat, spot.lon)}</p>
     <div class="row"><button class="btn primary" data-act="keepSpot">${ICON.pin} Make it a place</button>
+      <button class="btn" data-act="read">${ICON.read} Read about it</button>
       ${spot.prec === 'area' ? '' : `<button class="btn" data-act="streets">${ICON.streets} Streets</button>`}</div>`,
   { size: 'peek', state: { spot } })
   S.g.select('temp')
@@ -241,7 +246,8 @@ function locate() {
 }
 
 function picked(p, members) {
-  const list = (members || [p]).filter(m => m.id !== 'temp')
+  if (String(p.id).startsWith('g:')) return S.guide?.focus(p.id)
+  const list = (members || [p]).filter(m => m.id !== 'temp' && !String(m.id).startsWith('g:'))
   if (list.length > 1) return chooser(list)
   if (list.length) openPlace(list[0].id)
 }
@@ -267,6 +273,62 @@ function lensName(at) {
   performance.now() - (S.lensAt || 0) > 90 ? say() : (S.lensT = setTimeout(say, 90))
 }
 
+// ---- reading about a place (src/guide.js): what it needs from the app ------------------------------------------------------
+function countryAt(lat, lon) {                          // the country raster, one pixel at a time
+  if (!S.countryImg || !S.overlay) return null
+  const c = S.cpx ||= Object.assign(document.createElement('canvas'), { width: 1, height: 1 }), g = c.getContext('2d', { willReadFrequently: true })
+  const W = S.countryImg.naturalWidth, H = S.countryImg.naturalHeight
+  g.imageSmoothingEnabled = false; g.clearRect(0, 0, 1, 1)
+  g.drawImage(S.countryImg, Math.floor((((lon + 180) % 360 + 360) % 360) / 360 * W), Math.floor((90 - lat) / 180 * H), 1, 1, 0, 0, 1, 1)
+  const i = g.getImageData(0, 0, 1, 1).data[0], row = S.overlay.countries[i - 1]
+  return i && row ? { name: row[0], cc: row[1], continent: row[2], lat: row[7], lon: row[8] } : null
+}
+function seaAt(lat, lon) {                              // the sea or ocean around a spot: the nearest named one
+  let best = null, bd = Infinity
+  for (const [name, cls, , , la, lo] of S.overlay?.marine || []) {
+    const d = gaz.km({ lat, lon }, { lat: la, lon: lo }) * (cls === 'ocean' ? 1.6 : 1)
+    if (d < bd) { bd = d; best = { name, lat: la, lon: lo } }
+  }
+  return best
+}
+const subjectName = s => s.kind === 'landmark' ? s.title || s.name : s.name
+function placeFor(s) {                                  // a place you already have for what you're reading about
+  const name = subjectName(s).replace(/^Near /, '').toLowerCase(), far = { spot: 0.4, landmark: 1, town: 20, sea: 3000, country: 5000 }[s.kind] ?? 5
+  return S.places.find(p => p.name.replace(/^Near /, '').toLowerCase() === name && gaz.km(p, s) <= far) || null
+}
+async function placeOf(s, { quiet } = {}) {
+  const have = placeFor(s); if (have) return have
+  const p = await makePlace({ lat: s.lat, lon: s.lon, name: subjectName(s), sub: s.kind === 'country' || s.kind === 'sea' ? '' : s.sub || '',
+    prec: s.kind === 'country' || s.kind === 'sea' ? 'area' : s.kind === 'town' ? 'town' : 'exact', radius: s.kind === 'country' ? 4 : s.kind === 'sea' ? 6 : undefined })
+  if (!quiet) toast(`${p.name} is a place in your journal now.`)
+  return p
+}
+function makeGuideHere() {
+  S.guide = makeGuide({
+    esc, gaz, toast,
+    sheet: (html, o) => sheet(html, o),
+    land: (lat, lon) => S.g.land(lat, lon), countryAt, seaAt,
+    placeFor: s => placeFor(s), makePlace: s => placeOf(s), openPlace: id => openPlace(id),
+    dive: s => diveTo({ lat: s.lat, lon: s.lon, name: subjectName(s), sub: s.sub || '' }),
+    fly: (s, show) => {                                 // show: on a phone, lower the listing so the globe can be seen
+      if (show && innerWidth < 900) { $('#sheet').dataset.size = 'half'; document.body.dataset.sheet = 'half' }
+      const k = { country: 0.62, sea: 0.7, town: 0.3, landmark: 0.2, spot: 0.2 }[s.kind] ?? 0.3
+      S.g.flyTo({ lat: s.lat, lon: s.lon, dist: Math.max(S.g.options().minDist, S.g.fit() * k) }, 1400)
+    },
+    setGlance: list => { S.glance = list; pins() },
+    googleKey: () => localStorage.getItem('terralogue-google-key') || '',
+    keep: async (s, { kind, title = '', text = '', links = [], files = [] }) => {
+      const place = await placeOf(s, { quiet: true })
+      const prepared = []
+      for (const f of files) prepared.push(await prepare(f))
+      const ids = prepared.length ? await savePhotos(prepared) : []
+      await store.entries.put({ id: store.id('en'), placeId: place.id, kind, title, text, links, tags: ['read'], photos: ids, when: today(), been: false })
+      await store.persist(); await reload()
+      toast(`Kept in your journal, under ${place.name}.`)
+    },
+  })
+}
+
 // ---- a place ----------------------------------------------------------------------------------------------------------
 async function openPlace(pid, { fly = true } = {}) {
   const p = S.places.find(x => x.id === pid) || await store.places.get(pid)
@@ -278,6 +340,7 @@ async function openPlace(pid, { fly = true } = {}) {
   sheet(`<p class="eyebrow">${p.prec === 'area' ? 'An area' : been ? 'Been there' : list.length ? 'Read about' : 'A place'}</p>
     <h2 class="pname">${esc(p.name)}</h2><p class="muted small">${esc(p.sub)}${p.sub ? ' · ' : ''}${gaz.coords(p.lat, p.lon)}</p>
     <div class="tools">
+      <button data-act="read">${ICON.read}<span>Read</span></button>
       <button data-act="newEntry" data-kind="note">${ICON.note}<span>Note</span></button>
       <button data-act="placePhotos">${ICON.photo}<span>Photos</span></button>
       <button data-act="newEntry" data-kind="post">${ICON.post}<span>Post</span></button>
@@ -600,9 +663,15 @@ async function settings() {
       <div class="stats"><span><b>${S.places.length}</b>${S.places.length === 1 ? 'place' : 'places'}</span><span><b>${S.entries.length}</b>${S.entries.length === 1 ? 'entry' : 'entries'}</span><span><b>${photos}</b>${photos === 1 ? 'photo' : 'photos'}</span>${u ? `<span><b>${mb(u.usage || 0)}</b>MB</span>` : ''}</div>
       <p class="small">Everything stays on this device. ${persisted ? 'The browser has agreed to keep it.' : 'Back it up now and then: a browser can clear a site’s data.'}</p>
       <div class="row"><button class="btn" data-act="export">${ICON.down} Export a backup</button><button class="btn" data-act="import">${ICON.up} Import a backup</button></div></section>
+    <section class="group"><h3>Street View in listings</h3>
+      <p class="small">Listings show open street photos (Panoramax) and a button that opens Google Street View. To see Google’s Street View inside a
+        listing, paste a Google Maps key here (Maps Embed API; Google asks for a billing account but doesn’t charge for it). It stays on this device and isn’t in backups.</p>
+      <input id="gkey" class="field" placeholder="Google Maps key (optional)" value="${esc(localStorage.getItem('terralogue-google-key') || '')}" autocomplete="off" spellcheck="false">
+      <div class="row"><button class="btn small" data-act="saveKey">Save</button></div></section>
     <section class="group"><h3>About</h3>
       <p class="small muted">A hand-drawn globe for keeping notes, photos and posts about anywhere. Relief: ETOPO1 and GMTED2010 (AWS Terrain Tiles).
-      Coasts, countries and map labels: Natural Earth. Towns: GeoNames (CC BY 4.0). Streets: OpenFreeMap, © OpenMapTiles, © OpenStreetMap contributors. Built with three.js.</p></section>`,
+      Coasts, countries and map labels: Natural Earth. Towns: GeoNames (CC BY 4.0). Streets: OpenFreeMap, © OpenMapTiles, © OpenStreetMap contributors. Listings: Wikipedia, Wikivoyage, Wikidata and Wikimedia Commons (CC BY-SA, CC0, as credited),
+      Open-Meteo (CC BY 4.0), Panoramax. Built with three.js.</p></section>`,
   { size: 'full', state: { settings: true } })
 }
 
@@ -664,6 +733,7 @@ const ICON = {
   post: '<svg viewBox="0 0 24 24"><path d="M5 5h14M5 10h14M5 15h9M5 20h6"/></svg>',
   streets: '<svg viewBox="0 0 24 24"><path d="M3 9h18M3 16h18M8 3v18M16 3v18"/></svg>',
   edit: '<svg viewBox="0 0 24 24"><path d="M4 20h4L19 9l-4-4L4 16z"/><path d="m13.5 6.5 4 4"/></svg>',
+  read: '<svg viewBox="0 0 24 24"><path d="M12 6.5C10 5 7 4.5 3.5 5v13c3.5-.5 6.5 0 8.5 1.5 2-1.5 5-2 8.5-1.5V5C17 4.5 14 5 12 6.5zM12 6.5v13"/></svg>',
   pin: '<svg viewBox="0 0 24 24"><path d="M12 21c-.7-4.2-7-8-7-13a7 7 0 0 1 14 0c0 5-6.3 8.8-7 13z"/><circle cx="12" cy="8.5" r="2.4"/></svg>',
   area: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5" stroke-dasharray="2.5 3"/><circle cx="12" cy="12" r="2.2"/></svg>',
   town: '<svg viewBox="0 0 24 24"><path d="M4 20V10l5-3v13M9 20V5l7-2v17M16 20v-9l4 2v7M3 20h18"/></svg>',
@@ -717,6 +787,16 @@ const ACT = {
   editEntry: async el => editor(await store.entries.get(el.dataset.id)),
   lightbox: el => lightbox(el.dataset.id, +el.dataset.i),
   streets: () => diveTo(S.open.place || S.open.spot),
+  read: () => {
+    const p = S.open.place, sp = S.open.spot
+    S.temp = null
+    S.guide.open(p ? { lat: p.lat, lon: p.lon, name: p.name, sub: p.sub, prec: p.prec === 'area' || p.prec === 'town' ? p.prec : 'exact' } : { ...sp })
+  },
+  saveKey: () => {
+    const k = $('#gkey').value.trim()
+    k ? localStorage.setItem('terralogue-google-key', k) : localStorage.removeItem('terralogue-google-key')
+    toast(k ? 'Saved on this device. Street View shows inside listings now.' : 'Removed.')
+  },
   zoomIn: el => {
     closeSheet()
     const v = S.g.view()

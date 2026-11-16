@@ -1,6 +1,7 @@
 // A walk through the app in a real browser (Playwright + Chromium with software WebGL): makes places, writes, adds
 // photos, reads the journal, finds a country, changes the ink, draws streets from a cached map, and checks a backup
 // round-trips. Screenshots go to shots/. Fails on any page error.   Run: npm run build && npm run smoke
+// The street tiles come from a saved fixture; "read about it" reads the live open web (Wikipedia, Open-Meteo…).
 import { chromium } from 'playwright'
 import { spawn } from 'node:child_process'
 import { readFileSync, mkdirSync } from 'node:fs'
@@ -123,6 +124,17 @@ await step('pins too close to tell apart', async () => {
     const a = tags[i], b = tags[j]
     if (a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom) throw new Error('two name tags overlap')
   }
+})
+await step('read about it', async () => {
+  await pg.keyboard.press('Escape'); await pg.waitForTimeout(400)
+  await pg.click('[data-do=find]'); await pg.fill('#fq', 'nara'); await pg.waitForTimeout(500)
+  await pg.locator('.res[data-kind=town]').filter({ hasText: 'Japan' }).first().click(); await pg.waitForTimeout(1500)
+  await pg.click('[data-act=read]'); await pg.waitForSelector('#gs-about .g-prose', { timeout: 25000 }); await pg.waitForTimeout(1500)
+  await shot('12g-read')
+  const title = await pg.locator('.g-title').innerText()
+  if (!/Nara/.test(title)) throw new Error('the listing should be about Nara, got ' + title)
+  await pg.click('.g-keep >> nth=0'); await pg.waitForTimeout(1500)
+  await pg.evaluate(() => document.querySelector('#gs-climate').scrollIntoView()); await pg.waitForTimeout(2500); await shot('12h-read-climate')
 })
 await step('map layers and style', async () => {
   await pg.keyboard.press('Escape'); await pg.waitForTimeout(500)

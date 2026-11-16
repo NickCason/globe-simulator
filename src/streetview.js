@@ -17,8 +17,13 @@ export function openStreetView(container, o) {
   const kx = 111320 * Math.cos(origin.lat * Math.PI / 180), ky = 110540
   const el = document.createElement('div'); el.className = 'street'
   const cv = document.createElement('canvas'); el.appendChild(cv)
-  const credit = document.createElement('span'); credit.className = 'osm'
-  credit.textContent = '© OpenFreeMap © OpenMapTiles © OpenStreetMap contributors'; el.appendChild(credit)
+  // the map's credit: in full for the first moments, then folded into a small ⓘ in the corner that opens again on a tap
+  const credit = document.createElement('button'); credit.className = 'osm open'; credit.type = 'button'
+  credit.innerHTML = '<i>i</i><span>© <a href="https://openfreemap.org" target="_blank" rel="noopener">OpenFreeMap</a> © <a href="https://www.openmaptiles.org" target="_blank" rel="noopener">OpenMapTiles</a> © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap contributors</a></span>'
+  credit.addEventListener('pointerdown', e => e.stopPropagation())
+  credit.addEventListener('click', e => { if (!e.target.closest('a')) credit.classList.toggle('open') })
+  setTimeout(() => credit.classList.remove('open'), 5000)
+  el.appendChild(credit)
   el.style.setProperty('--x', Math.round(o.at?.x ?? 0) + 'px'); el.style.setProperty('--y', Math.round(o.at?.y ?? 0) + 'px')
   container.appendChild(el)
   const g = cv.getContext('2d')

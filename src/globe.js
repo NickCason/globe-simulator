@@ -773,6 +773,10 @@ export async function create(el, options = {}) {
     distFor: px => 1 / Math.sin(Math.atan(px * Math.tan(camera.fov * D2R / 2) / (H / 2))),
     jump(v) { Object.assign(view, v); flying = null; vel = { lat: 0, lon: 0 }; needs = true },
     pins: () => pins, view: () => ({ ...view }), fit: () => fit, options: () => ({ ...opt }),
+    land: (lat, lon) => {                             // is there land at a point (the coast mask)?
+      const mx = Math.min(M.w - 1, Math.max(0, Math.floor((lon + 180) / 360 * M.w))), my = Math.min(M.h - 1, Math.max(0, Math.floor((90 - lat) / 180 * M.h)))
+      return M.d[(my * M.w + mx) * 4] > 127
+    },
     where: (lat, lon) => { const s = screen(ll(lat, lon, 1 + ground(lat, lon) + LIFT)); return { x: s.x, y: s.y, front: s.front } },
     select(id) { for (const p of pins) { p.sel = p.id === id; p.node.classList.toggle('sel', p.sel) } needs = true },
     spin(on) { spin = on && !opt.calm },
