@@ -51,7 +51,7 @@ function ink(canvas, tiles, b, opts) {
   each(t => {
     g2.fillStyle = mix(THEME.paper, THEME.water, 0.26); g2.fill(poly(t.water), 'evenodd')
     g2.strokeStyle = mix(THEME.paper, THEME.water, 0.7); g2.lineWidth = 1.4 / s; g2.stroke(poly(t.water))
-    g2.fillStyle = mix(THEME.paper, THEME.park, 0.18); g2.fill(poly(t.parks), 'evenodd')
+    if (detail) { g2.fillStyle = mix(THEME.paper, THEME.park, 0.18); g2.fill(poly(t.parks), 'evenodd') }   // coarse woods and grass come as tile-sized squares
   })
   if (detail) {
     const pat = hatch(g2, s)
