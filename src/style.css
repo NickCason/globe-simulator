@@ -6,6 +6,7 @@
         --sb: env(safe-area-inset-bottom, 0px); --st: env(safe-area-inset-top, 0px); }
 html.dark { --card: color-mix(in srgb, var(--paper) 88%, var(--ink) 12%); }
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+[hidden] { display: none !important; }
 html, body { margin: 0; height: 100%; background: var(--paper); color: var(--ink); font-family: var(--ui); overflow: hidden;
              transition: background .5s var(--out), color .5s; }
 button { font: inherit; color: inherit; }
@@ -30,6 +31,26 @@ button { font: inherit; color: inherit; }
 .title p { margin: 4px 0 0; font-size: 13px; color: var(--muted); }
 .corner { all: unset; cursor: pointer; position: absolute; right: 14px; top: calc(var(--st) + 14px); width: 44px; height: 44px; border-radius: 50%;
           display: grid; place-items: center; background: color-mix(in srgb, var(--paper) 85%, transparent); border: 1.5px solid var(--line); z-index: 5; }
+#mapbtn { right: 66px; }
+.globe { transform-origin: 50% 50%; }
+.globe.diving { transform: scale(2.6); opacity: 0; pointer-events: none;
+                transition: right .45s var(--out), bottom .45s var(--out), transform .95s cubic-bezier(.7, 0, .84, 0), opacity .55s linear .35s; }
+.globe:not(.diving) { transition: right .45s var(--out), bottom .45s var(--out), transform .9s var(--out), opacity .5s var(--out); }
+
+/* the street map: opens as a circle from where the globe was, closes back into the middle */
+.street { position: absolute; inset: 0; z-index: 4; clip-path: circle(0px at var(--x) var(--y));
+          transition: clip-path 1s cubic-bezier(.65, 0, .35, 1); }
+.street.on { clip-path: circle(150% at var(--x) var(--y)); }
+.street.off { clip-path: circle(0px at var(--x) var(--y)); transition-duration: .6s; }
+.street canvas { position: absolute; inset: 0; touch-action: none; cursor: grab; }
+.street canvas:active { cursor: grabbing; }
+.street .osm { position: absolute; right: 10px; bottom: calc(var(--sb) + 86px); font: 10px var(--ui); color: var(--muted); pointer-events: none;
+               background: color-mix(in srgb, var(--paper) 85%, transparent); padding: 2px 6px; border-radius: 6px; }
+.globeback { all: unset; cursor: pointer; position: absolute; z-index: 6; right: 14px; top: calc(var(--st) + 14px); display: none; align-items: center; gap: 6px;
+             padding: 9px 14px; border-radius: 999px; font: 650 14px var(--ui); background: var(--accent); color: var(--paper);
+             box-shadow: 0 10px 22px -12px rgba(0,0,0,.6); }
+body.streeting .globeback { display: inline-flex; }
+body.streeting .title, body.streeting .corner { opacity: 0; pointer-events: none; }
 
 /* the dock */
 .dock { position: absolute; z-index: 6; left: 50%; bottom: calc(var(--sb) + 14px); transform: translateX(-50%); display: flex; gap: 4px; padding: 6px;
@@ -175,9 +196,7 @@ input[type=range] { width: 100%; }
 .toggles { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 12px; margin: 10px 0 6px; font-size: 14.5px; }
 .toggles label { display: flex; gap: 8px; align-items: center; cursor: pointer; }
 
-/* streets: the map has the screen, with a way back */
-body.streeting .dock, body.streeting .title, body.streeting .corner { opacity: 0; pointer-events: none; }
-.streetback { position: absolute; z-index: 5; left: 50%; transform: translateX(-50%); bottom: calc(var(--sb) + 18px); }
+
 
 /* toasts */
 .toasts { position: absolute; z-index: 40; left: 50%; top: calc(var(--st) + 14px); transform: translateX(-50%); display: grid; gap: 6px; pointer-events: none;
@@ -190,3 +209,7 @@ body.streeting .dock, body.streeting .title, body.streeting .corner { opacity: 0
 
 /* ?icon: only the globe, for making the app icon */
 body.iconshot .title, body.iconshot .dock, body.iconshot .corner, body.iconshot .sheet, body.iconshot .toasts { display: none; }
+
+/* the map sheet */
+.chips.pal { margin-top: 8px; }
+.sheet .seg { flex-wrap: wrap; }

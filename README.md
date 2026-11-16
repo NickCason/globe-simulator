@@ -15,8 +15,19 @@ A visual journal of the world, kept on a hand-drawn globe. Pick any place, from 
   - A country becomes an *area*, drawn as a soft glow rather than a pin.
 - **Entries.** Notes, photo sets and posts, each with a date, tags and links. Each is marked **been there** (solid pin) or **read about** (hollow pin).
 - **The Journal.** Everything, newest first, grouped by month. Search it, or filter by been there, read about, photos, posts or notes.
-- **Streets.** Any place can open into a sketched street map, drawn from OpenStreetMap. It's fetched the first time you ask, then kept.
-- **Yours, on your device.** Everything lives in the browser (IndexedDB). Back up to a single file, and restore it on any device. Nothing is sent anywhere, except the street-map request when you tap Streets.
+- **Down to the street, in one zoom.** Keep zooming in past the globe's closest view and it dives into a sketched street map of the spot underneath. **Streets** on a place does the same.
+  - The globe pushes in and fades while the map opens as a circle from the same point. Roads ink outward and hatched buildings follow.
+  - Pan and pinch; house numbers appear when you're close.
+  - Tap a building to make a place named by its address ("2025 Scottwood Avenue").
+  - Zoom back out, or tap **Globe**, and the map closes into the middle as the globe comes back.
+  - Streets are OpenStreetMap vector tiles from OpenFreeMap, kept in the browser's cache, so places you've seen open offline.
+- **Map layers, all adjustable** (the **Map** button):
+  - countries as borders or colour (political, by continent, one tint, pastel), with colour strength, border width, ink and dashes;
+  - labels for continents, countries, oceans and seas, and mountain ranges, deserts and other features;
+  - rivers;
+  - label size and how many labels to show.
+- **Looks.** Sketch (the hand-drawn globe) or Clean (the same world without the hand), and every knob behind them: wobble, paper grain, hatching, water lines, contour lines, graticule, line boil, drift, relief height, terraces. Four inks.
+- **Yours, on your device.** Everything lives in the browser (IndexedDB). Back up to a single file, and restore it on any device. Nothing you write leaves the device. The only outside requests are for street-map tiles, by map position, when you go down to street level.
 
 ## Develop
 
@@ -34,6 +45,7 @@ Data tools need `python3` with `numpy` and `pillow`. Downloads are cached in `to
 |---|---|
 | `tools/prep_globe.py` | `public/data/elev.jpg`, `mask.png`, `coast.png`: the globe's textures |
 | `tools/prep_places.py` | `public/data/places.json`: the offline gazetteer |
+| `tools/prep_overlay.py` | `public/data/countries.png` and `overlay.json`: country map, borders, rivers and labels |
 | `tools/make_fixtures.py` | the test photos |
 | `tools/make_icons.mjs` | the app icons, rendered from the globe itself (`?icon`) |
 
@@ -59,12 +71,20 @@ The handle's methods:
 - `g.set({ exaggeration, levels, hatch, … })`, `g.setTheme(theme)`
 - `g.pick(x, y)`, `g.where(lat, lon)`, `g.select(id)`, `g.fit()`, `g.dispose()`
 
-`src/streetmap.js` draws an OpenStreetMap extract as a sketched map that opens as a circle from a point.
+The handle also has:
+- `g.setOverlay(data, countriesImage)`;
+- `g.setLayers({ countries, palette, fill, borderWidth, … })` (see `LAYERS`);
+- `g.pause()` and `g.resume()`.
+
+The `onDive({ lat, lon })` option fires when you zoom in past `minDist`.
+
+`src/streetview.js`, `openStreetView(container, { lat, lon, theme, … })`, draws the street map from vector tiles (`src/tiles.js`, decoded by `src/mvt.js`).
 
 ## Credits
 
 - **Relief:** ETOPO1 and GMTED2010, via AWS Terrain Tiles (Mapzen).
 - **Coastlines, lakes and countries:** Natural Earth (public domain).
 - **Towns:** GeoNames (CC BY 4.0).
-- **Streets:** © OpenStreetMap contributors (ODbL), fetched from the Overpass API. The test fixture `test/fixtures/streets.json` is an OpenStreetMap extract too.
+- **Streets:** OpenFreeMap; © OpenMapTiles; © OpenStreetMap contributors (ODbL). The test tile `test/fixtures/toledo-14-4389-6102.pbf` comes from the same source.
+- **Map layers:** Natural Earth (public domain).
 - **Rendering:** three.js (MIT).

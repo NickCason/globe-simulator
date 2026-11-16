@@ -15,6 +15,11 @@ const errors = []
 const browser = await chromium.launch({ args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader'] })
 const ctx = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, acceptDownloads: true,
                                        geolocation: { latitude: 48.8584, longitude: 2.2945 }, permissions: ['geolocation'] })
+// street tiles: the saved Toledo tile answers every request, so the walk needs no network
+const TILE = readFileSync('test/fixtures/toledo-14-4389-6102.pbf')
+await ctx.route('https://tiles.openfreemap.org/**', route => route.request().url().endsWith('/planet')
+  ? route.fulfill({ contentType: 'application/json', body: JSON.stringify({ tiles: ['https://tiles.openfreemap.org/test/{z}/{x}/{y}.pbf'] }) })
+  : route.fulfill({ contentType: 'application/vnd.mapbox-vector-tile', body: TILE }))
 const pg = await ctx.newPage()
 pg.on('pageerror', e => errors.push('pageerror: ' + e.message))
 pg.on('console', m => { if (m.type() === 'error') errors.push('console: ' + m.text()) })
@@ -27,7 +32,7 @@ const count = () => pg.evaluate(() => new Promise(ok => { const r = indexedDB.op
 await pg.goto(URL_); await pg.waitForTimeout(4500)
 await shot('01-start')
 await step('start', () => pg.click('text=Start'))
-await pg.waitForTimeout(600)
+await pg.waitForTimeout(1500)
 await step('tap a spot', async () => { await pg.mouse.click(195, 380); await pg.waitForTimeout(1500); await shot('02-spot'); await pg.click('text=Make it a place') })
 await pg.waitForTimeout(1200); await shot('03-place')
 await step('write a note', async () => {
@@ -64,21 +69,30 @@ await step('find a country', async () => {
   await pg.click('[data-do=find]'); await pg.fill('#fq', 'japan'); await pg.waitForTimeout(600); await pg.click('.res >> nth=0'); await pg.waitForTimeout(2200)
   await shot('11-area')
 })
-await step('streets (from a cached map)', async () => {
-  const data = JSON.parse(readFileSync('test/fixtures/streets.json', 'utf8'))
-  const pid = await pg.evaluate(() => new Promise(ok => { const r = indexedDB.open('globe-journal'); r.onsuccess = () => {
-    const q = r.result.transaction('places').objectStore('places').getAll(); q.onsuccess = () => ok(q.result.find(p => p.name === 'Kyoto').id) } }))
-  await pg.evaluate(([pid, data]) => new Promise(ok => { const r = indexedDB.open('globe-journal'); r.onsuccess = () => {
-    const t = r.result.transaction('streets', 'readwrite'); t.objectStore('streets').put({ id: pid, data, fetched: Date.now() }); t.oncomplete = ok } }), [pid, data])
+await step('down to the streets and back', async () => {
   await pg.keyboard.press('Escape'); await pg.waitForTimeout(300)
-  await pg.click('[data-do=find]'); await pg.fill('#fq', 'kyoto'); await pg.waitForTimeout(600)
-  await pg.click('.res >> nth=0'); await pg.waitForTimeout(1800)
-  await pg.click('[data-act=streets]'); await pg.waitForTimeout(6500); await shot('12-streets')
-  await pg.click('text=Back to the globe'); await pg.waitForTimeout(1800)
+  await pg.click('[data-do=find]'); await pg.fill('#fq', 'toledo'); await pg.waitForTimeout(900)
+  await pg.locator('.res').filter({ hasText: 'Ohio' }).first().click(); await pg.waitForTimeout(2200)
+  await pg.click('[data-act=streets]'); await pg.waitForTimeout(6000); await shot('12-streets')
+  if (!(await pg.locator('.street canvas').count())) throw new Error('no street map')
+  await pg.mouse.click(200, 420); await pg.waitForTimeout(1200)
+  const name = await pg.locator('#sheet.on h2').innerText()
+  if (!/^(\d+\S* |On )/.test(name)) throw new Error('a street-level place should be named by its address, got ' + name)
+  await pg.click('text=Make it a place'); await pg.waitForTimeout(900); await shot('12b-street-place')
+  await pg.keyboard.press('Escape'); await pg.waitForTimeout(400)
+  await pg.click('#globeback'); await pg.waitForTimeout(2200)
+  if (await pg.locator('.street').count()) throw new Error('still in the streets after Globe')
+})
+await step('map layers and style', async () => {
+  await pg.click('#mapbtn'); await pg.waitForTimeout(500)
+  await pg.click('[data-act=lseg][data-k=countries][data-v=fill]'); await pg.click('[data-act=lseg][data-k=seaLabels][data-v=seas]')
+  await pg.click('[data-act=style][data-v=clean]'); await pg.waitForTimeout(400); await shot('12c-mapsheet')
+  await pg.keyboard.press('Escape'); await pg.waitForTimeout(1500); await shot('12d-clean-coloured')
+  await pg.click('#mapbtn'); await pg.waitForTimeout(400); await pg.click('[data-act=resetMap]'); await pg.keyboard.press('Escape'); await pg.waitForTimeout(500)
 })
 await step('slate ink', async () => {
   await pg.keyboard.press('Escape'); await pg.waitForTimeout(400)
-  await pg.click('#settings'); await pg.waitForTimeout(500); await pg.click('[data-ink=slate]'); await pg.waitForTimeout(1200); await shot('13-settings')
+  await pg.click('#mapbtn'); await pg.waitForTimeout(500); await pg.click('[data-ink=slate]'); await pg.waitForTimeout(1200); await shot('13-mapsheet')
   await pg.keyboard.press('Escape'); await pg.waitForTimeout(1200); await shot('14-slate')
 })
 const before = await count()
