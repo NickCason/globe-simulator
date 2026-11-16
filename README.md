@@ -10,7 +10,7 @@ A visual journal of the world, kept on a hand-drawn globe. Pick any place, from 
 - **Places, four ways.**
   - Tap the globe anywhere.
   - **Here** uses your location.
-  - **Find** searches every town of 15,000 people or more, and every country. It works offline.
+  - **Find** searches every town of 15,000 people or more and every country on board (offline), then, online, any town or village, street or landmark (Open-Meteo's place search from GeoNames, and Photon from OpenStreetMap).
   - **Photo** reads where a picture was taken from its EXIF. If the phone left that out, it asks.
   - A country becomes an *area*, drawn as a soft glow rather than a pin.
 - **Entries.** Notes, photo sets and posts, each with a date, tags and links. Each is marked **been there** (solid pin) or **read about** (hollow pin).

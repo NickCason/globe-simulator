@@ -2,7 +2,7 @@
 // shadows, and lines that "boil" a little as if redrawn by hand. three.js draws the world; pins, routes and soft
 // "somewhere around here" glows are drawn on top (DOM and a 2D canvas), so they stay crisp and easy to style.
 import {
-  ClampToEdgeWrapping, Color, DataTexture, LinearFilter, LinearMipmapLinearFilter, Mesh, NearestFilter, PerspectiveCamera,
+  ClampToEdgeWrapping, Color, DataTexture, LinearFilter, LinearMipmapLinearFilter, Matrix3, Mesh, NearestFilter, PerspectiveCamera,
   RGBAFormat, RepeatWrapping, Scene, ShaderMaterial, SphereGeometry, Texture, Vector3, WebGLRenderer,
 } from 'three'
 
@@ -90,7 +90,7 @@ const FRAG = /* glsl */`
 uniform sampler2D uElev; uniform sampler2D uMask; uniform sampler2D uCoast;
 uniform vec3 uInk; uniform vec3 uLand; uniform vec3 uSea; uniform vec3 uCamPos; uniform vec3 uLight;
 uniform float uLevels; uniform float uBoil; uniform float uPx; uniform float uDark; uniform float uReveal;
-uniform float uHatchOn; uniform float uWaterOn; uniform float uGridOn;
+uniform float uHatchOn; uniform float uWaterOn; uniform float uGridOn; uniform mat3 uInvRot;
 uniform sampler2D uIds; uniform sampler2D uPal; uniform float uFillOn; uniform float uWobble; uniform float uGrain; uniform float uContour;
 varying vec2 vUv; varying vec3 vWorld; varying vec3 vObj; varying vec3 vSphereN;
 
@@ -99,10 +99,11 @@ float noise(vec2 p) {
   vec2 i = floor(p), f = fract(p), u = f * f * (3.0 - 2.0 * f);
   return mix(mix(hash(i), hash(i + vec2(1, 0)), u.x), mix(hash(i + vec2(0, 1)), hash(i + vec2(1, 1)), u.x), u.y);
 }
-float pen(float s, float w) {                       // a pen line at every whole step of s, w pixels wide
-  float d = abs(fract(s - 0.5) - 0.5) / max(fwidth(s), 1e-5);
+float penW(float s, float fw, float w) {            // a pen line at every whole step of s (fw: how fast s changes per pixel)
+  float d = abs(fract(s - 0.5) - 0.5) / max(fw, 1e-5);
   return 1.0 - smoothstep(w * 0.5, w * 0.5 + 1.0, d);
 }
+float pen(float s, float w) { return penW(s, fwidth(s), w); }   // w pixels wide
 float strokes(vec3 dir, float px, float w, float wob) {   // parallel strokes ~6 px apart at any zoom
   float lv = log2(max(px, 1.0) / 6.0), f0 = exp2(floor(lv)), t = fract(lv);
   float s = dot(vObj, normalize(dir));
@@ -158,8 +159,14 @@ void main() {
   ink = max(ink, mix(0.38, 0.6, land) * max(h1, max(h2, h3)) * uHatchOn);
   col = mix(col, uInk, (1.0 - uHatchOn) * 0.22 * shade);                  // without strokes, a plain wash
 
-  float lat = (vUv.y - 0.5) * 180.0, lon = vUv.x * 360.0 - 180.0;          // the graticule, faintly
-  float g = max(pen(lat / 15.0, 0.7), pen(lon / 15.0, 0.7) * step(abs(lat), 76.0));
+  // The graticule, faintly, drawn where the line of sight meets the sea-level sphere: it runs on unbroken over the
+  // (exaggerated) mountains instead of riding up and down them, which near the edge broke lines into offset pieces.
+  vec3 rd = normalize(vWorld - uCamPos);
+  float rb = dot(uCamPos, rd), disc = rb * rb - (dot(uCamPos, uCamPos) - 1.0);
+  vec3 gp = uInvRot * (uCamPos + rd * (-rb - sqrt(max(disc, 0.0))));
+  float lat = degrees(asin(clamp(gp.y, -1.0, 1.0))), glon = degrees(atan(gp.z, -gp.x));
+  float flon = min(fwidth(glon), fwidth(mod(glon + 360.0, 360.0)));          // no false line where atan wraps
+  float g = max(pen(lat / 15.0, 0.7), penW(glon / 15.0, flon / 15.0, 0.7) * step(abs(lat), 76.0)) * step(0.0, disc);
   ink = max(ink, 0.15 * g * (1.0 - land * 0.6) * uGridOn);
   ink = max(ink, smoothstep(0.82, 0.97, rim + wob * 0.05));               // the outline
 
@@ -216,7 +223,7 @@ export async function create(el, options = {}) {
     uReveal: { value: opt.calm ? 1 : 0 }, uHatchOn: { value: 1 }, uWaterOn: { value: 1 }, uGridOn: { value: 1 },
     uIds: { value: blank() }, uPal: { value: palette }, uFillOn: { value: 0 }, uWobble: { value: 1 }, uGrain: { value: 1 }, uContour: { value: 1 },
     uInk: { value: new Color() }, uLand: { value: new Color() }, uSea: { value: new Color() },
-    uCamPos: { value: new Vector3() }, uLight: { value: new Vector3(...opt.light) },
+    uCamPos: { value: new Vector3() }, uLight: { value: new Vector3(...opt.light) }, uInvRot: { value: new Matrix3() },
   }
   const globe = new Mesh(new SphereGeometry(1, opt.segments, opt.segments / 2), new ShaderMaterial({ uniforms, vertexShader: VERT, fragmentShader: FRAG }))
   scene.add(globe)
@@ -287,6 +294,7 @@ export async function create(el, options = {}) {
     uniforms.uCamPos.value.copy(camera.position)
     uniforms.uPx.value = (H / 2) / Math.tan(camera.fov * D2R / 2) / (view.dist - 1)    // px per unit at the nearest point
     globe.updateMatrixWorld()
+    uniforms.uInvRot.value.setFromMatrix4(globe.matrixWorld).transpose()          // world -> globe (it only turns)
   }
   const tmp = new Vector3()
   function screen(v) {                       // object-space point -> {x, y, front}

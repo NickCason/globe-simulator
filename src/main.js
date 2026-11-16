@@ -6,6 +6,7 @@ import * as store from './store.js'
 import { prepare } from './photos.js'
 import * as gaz from './places.js'
 import { makeGuide } from './guide.js'
+import { searchOnline } from './geocode.js'
 
 const INKS = {
   parchment: { name: 'Parchment', paper: '#F3E8D2', ink: '#2B231D', accent: '#B4532F', muted: '#7A6450', park: '#6B7041', water: '#3F6E8C' },
@@ -81,6 +82,7 @@ async function land() {
   if (d > 15) d -= 30
   T += d
   g.reveal(calm ? 1 : 1100)
+  sp.follow = () => { const v = g.view(); return { lon: v.lon, lat: v.lat, R: g.radiusAt(v.dist) } }   // the wire rides the real globe as it fades
   g.spinDown({ lat: rest.lat, lon: rest.lon, dist: g.fit(), turns: T / 360, ms: 3000 * T / sp.speed, fromLat: sp.tilt, fromDist: g.distFor(sp.R) })
     .then(() => S.look.spin && g.spin(true))           // if you like it drifting, it drifts on from rest
   const el = $('#splash'), h = el.querySelector('h1'), to = $('.title h1')
@@ -500,7 +502,8 @@ async function journalList() {
 }
 
 // ---- find: a search bar at the top, its results above the keyboard ---------------------------------------------------------
-// Your places first, then towns and countries from the offline gazetteer; coordinates too ("48.85, 2.35", "33.9° S 18.4° E").
+// Your places first, then towns and countries from the offline gazetteer; coordinates too ("48.85, 2.35", "33.9° S 18.4° E");
+// then, online, anywhere else: villages of any size, streets, landmarks (src/geocode.js), as "More places".
 // mode 'find' offers what you pick (or opens your place); mode 'photo' puts waiting photos there.
 const SR = { mode: 'find', hits: [], at: 0 }
 function openSearch(mode = 'find') {
@@ -544,7 +547,9 @@ function results() {
     .sort((a, b) => fold(b.name).startsWith(k) - fold(a.name).startsWith(k))
     : [...S.places].sort((a, b) => lastWhen(b.id).localeCompare(lastWhen(a.id)))).slice(0, k ? 6 : 8)
   const world = k && !co ? gaz.search(q, 14).filter(h => !S.places.some(p => p.name === h.name && gaz.km(p, h) < 15)).slice(0, 12) : []
-  SR.hits = [...(co ? [{ kind: 'coords', ...co }] : []), ...mine.map(p => ({ kind: 'mine', place: p })), ...world]
+  const known = [...S.places, ...world]
+  const more = SR.online?.q === q ? SR.online.list.filter(h => !known.some(w => fold(w.name) === fold(h.name) && gaz.km(w, h) < 15)) : []
+  SR.hits = [...(co ? [{ kind: 'coords', ...co }] : []), ...mine.map(p => ({ kind: 'mine', place: p })), ...world, ...more]
   SR.at = 0
   let i = 0, html = ''
   const row = (icon, cls, name, sub) => `<button class="res${i === 0 ? ' on' : ''}" data-i="${i}" data-kind="${SR.hits[i++].kind}"><i class="ico ${cls}">${icon}</i><span><b>${name}</b><small>${sub}</small></span></button>`
@@ -556,9 +561,27 @@ function results() {
     mine.map(p => row(p.prec === 'area' ? ICON.area : ICON.pin, beenTo(p.id) ? 'been' : 'mine', mark(p.name, q), esc(p.sub || gaz.coords(p.lat, p.lon)))).join('')
   if (world.length) html += `<p class="eyebrow">The world</p>` +
     world.map(h => row(h.kind === 'country' ? ICON.area : ICON.town, '', mark(h.name, q), esc(h.kind === 'country' ? 'A country' : h.sub))).join('')
-  if (!html) html = q ? `<p class="none">${gaz.ready() ? `Nothing called “${esc(q)}”.` : 'Looking…'}<br><span>Towns of 15,000 people or more are here, and every country. For anywhere else, press and hold on the globe.</span></p>`
-    : `<p class="none">Find a town or a country, or type coordinates.<br><span>For anywhere smaller, press and hold on the globe.</span></p>`
+  if (more.length) html += `<p class="eyebrow">More places</p>` +
+    more.map(h => row(h.place ? ICON.town : ICON.pin, '', mark(h.name, q), esc([h.label, h.sub].filter(Boolean).join(' · ')))).join('')
+  else if (SR.looking === q) html += `<p class="looking"><i></i>Looking further afield…</p>`
+  if (!html) html = q ? `<p class="none">${gaz.ready() ? `Nothing called “${esc(q)}”.` : 'Looking…'}<br><span>${navigator.onLine
+      ? 'Try another spelling, or press and hold on the globe to put a place exactly where you mean.'
+      : 'Offline, only towns of 15,000 people or more and the countries are here. Press and hold on the globe for anywhere else.'}</span></p>`
+    : `<p class="none">Find any town or village, a street, a landmark, or type coordinates.<br><span>Or press and hold on the globe to put a place exactly where you mean.</span></p>`
   $('#results').innerHTML = html
+}
+// After the offline answers, ask further afield (debounced; only the latest question's answer is shown).
+function further() {
+  clearTimeout(SR.timer)
+  const q = $('#fq').value.trim()
+  if (q.length < 2 || parseCoords(q) || SR.online?.q === q) return
+  SR.timer = setTimeout(() => {
+    SR.looking = q; results()
+    searchOnline(q)
+      .then(list => { SR.online = { q, list } })
+      .catch(() => {})
+      .finally(() => { if (SR.looking === q) SR.looking = null; if ($('#fq').value.trim() === q && !$('#search').hidden) results() })
+  }, 320)
 }
 function highlight(n) {
   const rows = [...$('#results').querySelectorAll('.res')]; if (!rows.length) return
@@ -572,7 +595,8 @@ async function choose(i) {
   if (S.street) await rise()
   const spot = h.kind === 'country' ? { lat: h.lat, lon: h.lon, name: h.name, sub: '', prec: 'area', radius: h.radius, kind: 'country' }
     : h.kind === 'coords' ? { lat: h.lat, lon: h.lon, ...(await gaz.load(), gaz.describe(h.lat, h.lon)), prec: 'exact', kind: 'coords' }
-    : h.kind === 'town' ? { lat: h.lat, lon: h.lon, name: h.name, sub: h.sub, prec: 'town', kind: 'town' } : null
+    : h.kind === 'town' ? { lat: h.lat, lon: h.lon, name: h.name, sub: h.sub, prec: 'town', kind: 'town' }
+    : h.kind === 'online' ? { lat: h.lat, lon: h.lon, name: h.name, sub: h.sub, prec: h.prec, kind: h.prec === 'town' ? 'town' : 'exact' } : null
   if (mode === 'photo') {
     if (!S.pending) return
     return pendingTo(h.kind === 'mine' ? h.place : await makePlace(spot))
@@ -582,7 +606,7 @@ async function choose(i) {
 }
 {
   const q = $('#fq')
-  q.addEventListener('input', () => results())
+  q.addEventListener('input', () => { results(); further() })
   q.addEventListener('keydown', e => {
     if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); highlight(SR.at + (e.key === 'ArrowDown' ? 1 : -1)) }
     else if (e.key === 'Enter') { e.preventDefault(); choose(SR.at) }
@@ -670,7 +694,7 @@ async function settings() {
       <div class="row"><button class="btn small" data-act="saveKey">Save</button></div></section>
     <section class="group"><h3>About</h3>
       <p class="small muted">A hand-drawn globe for keeping notes, photos and posts about anywhere. Relief: ETOPO1 and GMTED2010 (AWS Terrain Tiles).
-      Coasts, countries and map labels: Natural Earth. Towns: GeoNames (CC BY 4.0). Streets: OpenFreeMap, © OpenMapTiles, © OpenStreetMap contributors. Listings: Wikipedia, Wikivoyage, Wikidata and Wikimedia Commons (CC BY-SA, CC0, as credited),
+      Coasts, countries and map labels: Natural Earth. Towns: GeoNames (CC BY 4.0). Streets: OpenFreeMap, © OpenMapTiles, © OpenStreetMap contributors. Search beyond the towns on board: Open-Meteo (GeoNames) and Photon (OpenStreetMap). Listings: Wikipedia, Wikivoyage, Wikidata and Wikimedia Commons (CC BY-SA, CC0, as credited),
       Open-Meteo (CC BY 4.0), Panoramax. Built with three.js.</p></section>`,
   { size: 'full', state: { settings: true } })
 }

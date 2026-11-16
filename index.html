@@ -64,13 +64,18 @@
       function draw(now) {
         if (!S.alive) return
         var t = (now - S.t0) / 1000, cx = W / 2, cy = H / 2
-        var lon0 = S.lon(now) * D, tilt = S.tilt * D, ct = Math.cos(tilt), st = Math.sin(tilt)
+        var lon0 = S.lon(now) * D, tilt = S.tilt * D, r = R
+        if (S.follow) { var f = S.follow(); lon0 = f.lon * D; tilt = f.lat * D; r = f.R }   // handing over: ride on the real globe
+        var ct = Math.cos(tilt), st = Math.sin(tilt)
+        // the real globe's camera (a 30° field of view), so these lines lie on its graticule exactly
+        var F = (H / 2) / Math.tan(15 * D), dist = 1 / Math.sin(Math.atan(r / F)), horizon = 1 / dist
         var pen = calm ? 1 : Math.min(1, t / 0.9), lines = calm ? 1 : Math.max(0, Math.min(1, (t - 0.35) / 0.8))
         g.clearRect(0, 0, W, H); g.lineCap = 'round'; g.lineJoin = 'round'
-        // a point on the sphere -> screen, and whether it faces us
+        // a point on the sphere -> screen, and how far it is in front of the horizon
         function P(la, lo) {
           var x = Math.cos(la) * Math.sin(lo - lon0), y = Math.sin(la), z = Math.cos(la) * Math.cos(lo - lon0)
-          return [cx + R * x, cy - R * (y * ct - z * st), y * st + z * ct]
+          var y2 = y * ct - z * st, z2 = y * st + z * ct, k = F / (dist - z2)
+          return [cx + x * k, cy - y2 * k, z2 - horizon]
         }
         function curve(fn, n, front) {
           g.beginPath(); var on = false
@@ -95,14 +100,14 @@
           g.beginPath()
           var end = Math.max(0.001, Math.min(1, pen * 1.15 - k * 0.15)) * 72
           for (var i = 0; i <= end; i++) {
-            var a = -Math.PI / 2 + i / 72 * Math.PI * 2, r = R * (1 + k * 0.03) + Math.sin(i * 91.7 + k * 7 + Math.floor(t * 7) * 3.1) * 0.7
-            i ? g.lineTo(cx + Math.cos(a) * r, cy + Math.sin(a) * r) : g.moveTo(cx + Math.cos(a) * r, cy + Math.sin(a) * r)
+            var a = -Math.PI / 2 + i / 72 * Math.PI * 2, rr = r * (1 + k * 0.03) + Math.sin(i * 91.7 + k * 7 + Math.floor(t * 7) * 3.1) * 0.7
+            i ? g.lineTo(cx + Math.cos(a) * rr, cy + Math.sin(a) * rr) : g.moveTo(cx + Math.cos(a) * rr, cy + Math.sin(a) * rr)
           }
           g.stroke()
         }
         // a little arc of accent on the turning edge, like a highlight
         g.globalAlpha = 0.9 * lines; g.strokeStyle = accent; g.lineWidth = 2
-        g.beginPath(); g.arc(cx, cy, R * 1.075, -Math.PI * 0.62 + (calm ? 0 : t * 0.5), -Math.PI * 0.38 + (calm ? 0 : t * 0.5)); g.stroke()
+        g.beginPath(); g.arc(cx, cy, r * 1.075, -Math.PI * 0.62 + (calm ? 0 : t * 0.5), -Math.PI * 0.38 + (calm ? 0 : t * 0.5)); g.stroke()
         g.globalAlpha = 1
         S.shown += (S.want - S.shown) * 0.08
         bar.style.transform = 'scaleX(' + S.shown.toFixed(3) + ')'
