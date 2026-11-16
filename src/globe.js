@@ -125,13 +125,17 @@ void main() {
   vec2 q = vUv * vec2(160.0, 80.0);
   float wob = (noise(q + uBoil * 13.7) - 0.5) * uWobble, wob2 = (noise(q * 0.5 - uBoil * 7.9) - 0.5) * uWobble;
 
-  // light from the north-west, as on printed maps: south-east slopes, and the ground just below a step, in shadow
+  // Light from the north-west, as on printed maps. The land is layers of cut card, so the shadows are the ones each
+  // layer casts on the layer below: hatched from its edge, fading away to the south-east, never up over the edge line.
+  // (The smooth slope underneath only tints; hatching it ran strokes across the flats and over the layer lines.)
   vec2 tx = vec2(1.0 / 1024.0, 1.0 / 512.0);
   float hx = H(vUv + vec2(tx.x, 0.0)) - H(vUv - vec2(tx.x, 0.0));
   float hy = H(vUv + vec2(0.0, tx.y)) - H(vUv - vec2(0.0, tx.y));
   float slope = clamp((hy - hx) * 6.0, 0.0, 1.0) * land;
   float lv = level(h);
-  float under = step(lv + 0.5, level(H(vUv + vec2(-1.6, 1.6) * tx))) * land;
+  vec2 sd = vec2(-1.0, 1.0) * tx;                                          // towards the light
+  float under = max(step(lv + 0.5, level(H(vUv + sd * 0.9))),
+                    max(0.75 * step(lv + 0.5, level(H(vUv + sd * 1.8))), 0.5 * step(lv + 0.5, level(H(vUv + sd * 2.7))))) * land;
 
   vec3 col = mix(uSea, uLand, land);
   if (uFillOn > 0.5) {                                                    // countries, coloured from the palette
@@ -140,7 +144,7 @@ void main() {
   }
   col = mix(col, uInk, (0.03 + 0.024 * lv) * land);                     // layer on layer, like cut card
   col = mix(col, uInk, 0.06 * floor(seaD * 3.0 + 0.5) / 3.0 * (1.0 - land));
-  col = mix(col, uInk, 0.10 * under);
+  col = mix(col, uInk, 0.10 * under + 0.05 * slope * (1.0 - under));
 
   float ink = 0.0;
   float cd = abs(m - 0.5) / max(fwidth(m), 1e-5);                         // the coast, drawn twice by a loose hand
@@ -151,7 +155,7 @@ void main() {
   ink = max(ink, 0.42 * ripple * uWaterOn);                                // water-lining
 
   float shade = clamp((1.0 - lit) * 1.15 + rim * 0.25 - 0.18, 0.0, 1.0);    // the globe's own shadow side
-  shade = max(shade, max(slope * 0.55, under * 0.45));
+  shade = max(shade, under * 0.5);
   float hw = 0.8;
   float h1 = strokes(vec3(1.0, 0.85, 0.35), uPx, hw, wob * 0.4) * smoothstep(0.28, 0.40, shade);
   float h2 = strokes(vec3(-0.75, 1.0, 0.2), uPx, hw, wob2 * 0.4) * smoothstep(0.52, 0.66, shade);
