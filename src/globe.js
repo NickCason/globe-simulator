@@ -220,11 +220,12 @@ export async function create(el, options = {}) {
   }
   const globe = new Mesh(new SphereGeometry(1, opt.segments, opt.segments / 2), new ShaderMaterial({ uniforms, vertexShader: VERT, fragmentShader: FRAG }))
   scene.add(globe)
+  renderer.compile(scene, camera)                      // build the shaders now, not on the first frame
 
   const view = { lat: 30, lon: -40, dist: 0 }
   let fit = 4, W = 1, H = 1, accent = '#B4532F', inkCss = '#2B231D', paperCss = '#F3E8D2'
   let pins = [], routes = [], spin = opt.spin && !opt.calm, vel = { lat: 0, lon: 0 }, flying = null, dragging = false, alive = true
-  let boilT = 0, needs = true
+  let boilT = 0, needs = true, ready = false
   let layers = { ...LAYERS }, mapData = null, lifted = null, water = '#4A7A96'   // map layers (see setLayers)
 
   function set(o) {                          // change the look while it runs
@@ -276,6 +277,7 @@ export async function create(el, options = {}) {
     else if (was !== fit) view.dist = 1 + (view.dist - 1) * (fit - 1) / (was - 1)        // same zoom when the space changes size
     view.dist = Math.min(view.dist, fit * 1.25)
     needs = true
+    if (ready && !paused) draw()          // now, not next frame: a resized canvas is blank until it's drawn again
   }
   const ro = new ResizeObserver(resize); ro.observe(el); resize()
 
@@ -301,15 +303,16 @@ export async function create(el, options = {}) {
     return t > 0 && t < len - 1e-3
   }
   // the place under a point on the screen (client coordinates), or null off the globe
-  function pick(cx, cy) {
+  function pickWorld(cx, cy) {
     const r = el.getBoundingClientRect()
     const ndc = new Vector3(((cx - r.left) / W) * 2 - 1, -((cy - r.top) / H) * 2 + 1, 0.5).unproject(camera)
     const dir = ndc.sub(camera.position).normalize(), c = camera.position
     const b = c.dot(dir), disc = b * b - (c.lengthSq() - 1.0)
     if (disc < 0) return null
-    const hit = c.clone().add(dir.multiplyScalar(-b - Math.sqrt(disc)))
-    return toLatLon(globe.worldToLocal(hit))
+    const world = c.clone().add(dir.multiplyScalar(-b - Math.sqrt(disc)))
+    return { ...toLatLon(globe.worldToLocal(world.clone())), world }
   }
+  function pick(cx, cy) { const h = pickWorld(cx, cy); return h && { lat: h.lat, lon: h.lon } }
 
   // ---- drawn on top: the sketched rim, soft glows, routes --------------------------------------------------------
   const jitter = seed => Math.sin(seed * 91.7 + boilT * 3.1) * 0.5
@@ -462,7 +465,7 @@ export async function create(el, options = {}) {
     if (!anyLabels) return
     // labels grow with the globe: about half size when the whole world fits on a phone, full size once you're closer
     const Rpx = (H / 2) * Math.tan(Math.asin(Math.min(1, 1 / view.dist))) / Math.tan(camera.fov * D2R / 2)
-    const placed = [], zs = Math.max(0.5, Math.min(1, Rpx / 330)), k = layers.labelSize * zs
+    const placed = [...pinBoxes], zs = Math.max(0.5, Math.min(1, Rpx / 330)), k = layers.labelSize * zs   // pins and their tags first
     const SERIF = '"Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif', SANS = '-apple-system, system-ui, "Segoe UI", Roboto, sans-serif'
     for (const L of lifted.labels) {
       if (L.kind === 'continent' && (!layers.continentLabels || zl > L.max)) continue
@@ -493,39 +496,113 @@ export async function create(el, options = {}) {
 
   // ---- pins: DOM buttons, so they can be tapped and styled with CSS -----------------------------------------------
   // a pin: {id, lat, lon, label, prec: 'address'|'street'|'town'|'county'|'state'|'country', glow, glowR (degrees), always}
+  const measure = document.createElement('canvas').getContext('2d')
+  let pinBoxes = []
   function setPins(list) {
     pinLayer.innerHTML = ''
+    measure.font = '600 11.5px -apple-system, system-ui, "Segoe UI", Roboto, sans-serif'
     pins = list.map(p => {
       const node = document.createElement('button')
       node.className = `gpin ${p.prec || 'town'}${p.blank ? ' blank' : ''}`
       node.innerHTML = p.prec === 'address' || p.prec === 'street'
-        ? `<svg viewBox="0 0 24 32" width="24" height="32"><path d="M12 31c-1-6-10-12-10-19a10 10 0 0 1 20 0c0 7-9 13-10 19z"/><circle cx="12" cy="12" r="3.6"/></svg><span>${p.label || ''}</span>`
-        : p.glow ? `<span>${p.label || ''}</span>` : `<i></i><span>${p.label || ''}</span>`
-      node.addEventListener('click', e => { e.stopPropagation(); onPick && onPick(p) })
+        ? `<svg viewBox="0 0 24 32" width="24" height="32"><path d="M12 31c-1-6-10-12-10-19a10 10 0 0 1 20 0c0 7-9 13-10 19z"/><circle cx="12" cy="12" r="3.6"/></svg><b></b><span>${p.label || ''}</span>`
+        : p.glow ? `<span>${p.label || ''}</span>` : `<i></i><b></b><span>${p.label || ''}</span>`
+      const pin = { ...p, node, tagW: measure.measureText(p.label || '').width + 16 }
+      node.addEventListener('click', e => { e.stopPropagation(); onPick && onPick(pin, pin.members) })
       pinLayer.appendChild(node)
-      return { ...p, node }
+      return pin
     })
     needs = true
   }
-  function drawPins() {
+  const overlaps = (a, b) => a[0] < b[2] && b[0] < a[2] && a[1] < b[3] && b[1] < a[3]
+  const tall = p => p.prec === 'address' || p.prec === 'street'
+  const markBox = p => tall(p) ? [p.s.x - 12, p.s.y - (p.members ? 40 : 32), p.s.x + (p.members ? 28 : 12), p.s.y + 2]
+    : [p.s.x - 8, p.s.y - (p.members ? 18 : 8), p.s.x + (p.members ? 26 : 8), p.s.y + 8]
+  function layoutPins() {
+    const vis = []
     for (const p of pins) {
-      const s = screen(ll(p.lat, p.lon, 1 + ground(p.lat, p.lon) + LIFT))
-      const show = s.front > 0.08
-      p.node.style.opacity = show ? Math.min(1, (s.front - 0.08) * 6) : 0
+      p.s = screen(ll(p.lat, p.lon, 1 + ground(p.lat, p.lon) + LIFT))
+      p.shown = p.s.front > 0.08 && !(hold?.active && hold.lens && Math.hypot(p.s.x - hold.lens.x, p.s.y - hold.lens.y) < hold.lens.r + 24)
+      p.members = null; p.merged = false; p.tag = false
+      if (p.shown) vis.push(p)
+    }
+    const rank = p => (p.sel ? 0 : 2) + (tall(p) ? 0 : 1) + (p.glow ? 4 : 0)
+    vis.sort((a, b) => rank(a) - rank(b))
+    const leads = []
+    for (const p of vis) {                          // too close to tap apart: one pin, with a count
+      const lead = !p.glow && leads.find(q => !q.glow && Math.hypot(q.s.x - p.s.x, q.s.y - p.s.y) < 22)
+      if (lead) { (lead.members ||= [lead]).push(p); p.merged = true } else leads.push(p)
+    }
+    pinBoxes = leads.filter(p => !p.glow).map(markBox)
+    const near = view.dist < fit * 0.42
+    for (const p of leads) {                        // name tags, most important first; never on top of another tag or pin
+      if (!(p.sel || p.always || near || p.glow)) continue
+      const top = p.glow ? -9 : tall(p) ? 5 : 10
+      const box = [p.s.x - p.tagW / 2, p.s.y + top, p.s.x + p.tagW / 2, p.s.y + top + 19]
+      if (!p.sel && pinBoxes.some(b => overlaps(b, box))) continue    // the chosen pin's name always shows; the rest make way
+      p.tag = true; pinBoxes.push(box)
+    }
+  }
+  function applyPins() {
+    for (const p of pins) {
+      const show = p.shown && !p.merged
+      p.node.style.opacity = show ? Math.min(1, (p.s.front - 0.08) * 6) : 0
       p.node.style.pointerEvents = show ? '' : 'none'
-      p.node.style.transform = `translate(${s.x}px, ${s.y}px)`
-      p.node.classList.toggle('near', !!(p.sel || p.always || view.dist < fit * 0.42))
+      p.node.style.transform = `translate(${p.s.x}px, ${p.s.y}px)`
+      p.node.classList.toggle('near', p.tag)
+      const b = p.node.querySelector('b'); if (b) b.textContent = p.members ? p.members.length : ''
     }
   }
 
+  // ---- the lens: press and hold, and a magnified view of the spot under your finger follows it --------------------
+  const MAG = 4, LENS = 132
+  const cam2 = new PerspectiveCamera(30, 1, 0.01, 100)
+  const lensEl = document.createElement('div'); lensEl.className = 'lens'
+  lensEl.innerHTML = '<div class="glass"><canvas></canvas><i></i></div><span></span>'
+  el.appendChild(lensEl)
+  const lensCv = lensEl.querySelector('canvas'), lensG = lensCv.getContext('2d')
+  let hold = null
+  function drawLens() {                            // render the zoomed view into a corner, copy it out, then the real frame
+    const h = pickWorld(hold.x, hold.y)
+    if (!h) { lensEl.classList.remove('on'); hold.at = null; return }
+    hold.at = h
+    const r = el.getBoundingClientRect(), dpr = renderer.getPixelRatio()
+    let x = hold.x - r.left, y = hold.y - r.top - 120
+    if (y < LENS / 2 + 8) { y = hold.y - r.top; x += x > W / 2 ? -120 : 120 }   // no room above the finger: beside it
+    x = Math.max(LENS / 2 + 8, Math.min(W - LENS / 2 - 8, x)); y = Math.max(LENS / 2 + 8, Math.min(H - LENS / 2 - 30, y))
+    hold.lens = { x, y, r: LENS / 2 }
+    cam2.position.copy(camera.position); cam2.up.set(0, 1, 0); cam2.fov = camera.fov / MAG; cam2.aspect = 1
+    cam2.updateProjectionMatrix(); cam2.lookAt(h.world)
+    renderer.setScissorTest(true); renderer.setScissor(0, H - LENS, LENS, LENS); renderer.setViewport(0, H - LENS, LENS, LENS)
+    renderer.setClearColor(paperCss, 1); renderer.clear()
+    const px = uniforms.uPx.value; uniforms.uPx.value = px * MAG
+    renderer.autoClear = false; renderer.render(scene, cam2); renderer.autoClear = true
+    uniforms.uPx.value = px
+    const n = Math.round(LENS * dpr)
+    if (lensCv.width !== n) { lensCv.width = lensCv.height = n }
+    lensG.drawImage(renderer.domElement, 0, 0, n, n, 0, 0, n, n)
+    renderer.setScissorTest(false); renderer.setViewport(0, 0, W, H); renderer.setClearColor(0x000000, 0)
+    lensEl.style.transform = `translate(${x - LENS / 2}px, ${y - LENS / 2}px)`
+    lensEl.classList.add('on')
+  }
+
   // ---- motion: idle drift, inertia, flights, routes -------------------------------------------------------------
-  let last = performance.now(); const born = last
-  let paused = false
+  let last = performance.now(), born = opt.deferReveal ? 0 : last, revealMs = 1500
+  let paused = false, spinning = null, drawnFirst
+  const drawn = new Promise(r => { drawnFirst = r })
+  const settleEase = t => 1 - Math.pow(1 - t, 3)
   function frame(now) {
     if (!alive) return
     if (paused) { requestAnimationFrame(frame); return }
     const dt = Math.min(50, now - last); last = now
-    if (flying) {
+    if (spinning) {                                     // spinning in, and coming gently to rest
+      const s2 = spinning, t = Math.min(1, (now - s2.t0) / s2.ms), q = settleEase(t)
+      view.lon = wrap(s2.to.lon + s2.turns * 360 * (1 - q))
+      view.lat = s2.from.lat + (s2.to.lat - s2.from.lat) * q
+      view.dist = fit * (s2.from.k + (s2.to.k - s2.from.k) * q)
+      needs = true
+      if (t >= 1) { spinning = null; s2.done() }
+    } else if (flying) {
       const f = flying, t = Math.min(1, (now - f.t0) / f.ms), k = ease(t)
       view.lat = f.a.lat + (f.b.lat - f.a.lat) * k
       view.lon = wrap(f.a.lon + wrap(f.b.lon - f.a.lon) * k)
@@ -547,15 +624,20 @@ export async function create(el, options = {}) {
       needs = true
       if (t >= 1) { r.anim = false; r.done && r.done() }
     }
-    if (uniforms.uReveal.value < 1) { uniforms.uReveal.value = Math.min(1, (now - born) / 1500); needs = true }
+    if (uniforms.uReveal.value < 1 && born) { uniforms.uReveal.value = Math.max(0, Math.min(1, (now - born) / revealMs)); needs = true }
     const step = Math.floor(now / 140)                   // the lines boil, about seven times a second
     if (opt.boil && !opt.calm && step !== boilT) { boilT = step; uniforms.uBoil.value = (step % 97) / 97; needs = true }
-    if (needs) {
-      place(); renderer.render(scene, camera); drawOverlay(); drawPins(); needs = false
-      onView && onView({ ...view, fit })
-    }
+    if (needs || hold?.active) draw()
     requestAnimationFrame(frame)
   }
+  function draw() {
+    place()
+    if (hold?.active) drawLens()
+    renderer.render(scene, camera); layoutPins(); drawOverlay(); applyPins(); needs = false
+    drawnFirst()
+    onView && onView({ ...view, fit })
+  }
+  ready = true
   requestAnimationFrame(frame)
 
   function flyTo(to, ms = 1600) {
@@ -597,12 +679,29 @@ export async function create(el, options = {}) {
   el.addEventListener('pointerdown', e => {
     if (e.target.closest('.gpin')) return
     el.setPointerCapture(e.pointerId); pts.set(e.pointerId, [e.clientX, e.clientY])
+    if (spinning) { const d = spinning.done; spinning = null; d() }
     dragging = true; spin = false; flying = null; vel = { lat: 0, lon: 0 }; lastMove = [e.clientX, e.clientY, performance.now()]
     downAt = pts.size === 1 ? [e.clientX, e.clientY, performance.now()] : null
+    if (hold?.active) { lensEl.classList.remove('on'); needs = true }
+    clearTimeout(hold?.timer); hold = null
+    if (pts.size === 1 && opt.onHoldEnd) {
+      hold = { x: e.clientX, y: e.clientY, timer: setTimeout(() => {
+        if (!hold) return
+        hold.active = true; dragging = false; vel = { lat: 0, lon: 0 }; needs = true
+        navigator.vibrate?.(12)
+        const at = pick(hold.x, hold.y); opt.onHold && opt.onHold(at)
+      }, 430) }
+    }
     if (pts.size === 2) { const [a, b] = [...pts.values()]; pinch0 = { d: Math.hypot(a[0] - b[0], a[1] - b[1]), dist: view.dist } }
   })
   el.addEventListener('pointermove', e => {
     if (!pts.has(e.pointerId)) return
+    if (hold?.active) {                                  // holding: the finger moves the lens, not the world
+      hold.x = e.clientX; hold.y = e.clientY; needs = true
+      const at = pick(hold.x, hold.y); opt.onHoldMove && at && opt.onHoldMove(at)
+      return
+    }
+    if (hold && Math.hypot(e.clientX - hold.x, e.clientY - hold.y) > 8) { clearTimeout(hold.timer); hold = null }
     const prev = pts.get(e.pointerId); pts.set(e.pointerId, [e.clientX, e.clientY])
     if (pts.size === 2 && pinch0) {
       const [a, b] = [...pts.values()]
@@ -619,13 +718,28 @@ export async function create(el, options = {}) {
     needs = true
   })
   const up = e => {
+    if (hold?.active) {
+      const at = hold.at ? { lat: hold.at.lat, lon: hold.at.lon } : null
+      hold = null; pts.delete(e.pointerId); dragging = false; downAt = null
+      lensEl.classList.remove('on'); needs = true
+      if (e.type === 'pointerup' && at) opt.onHoldEnd(at)
+      return
+    }
+    clearTimeout(hold?.timer); hold = null
     const was = pts.get(e.pointerId); pts.delete(e.pointerId)
     if (pts.size < 2) pinch0 = null
     if (!pts.size) dragging = false
     if (e.type === 'pointerup' && downAt && was && Math.hypot(e.clientX - downAt[0], e.clientY - downAt[1]) < 6 && performance.now() - downAt[2] < 350) {
       vel = { lat: 0, lon: 0 }
-      const at = pick(e.clientX, e.clientY)
-      if (at && onTap) onTap(at)
+      const r = el.getBoundingClientRect(), x = e.clientX - r.left, y = e.clientY - r.top
+      let best = null, bd = 24
+      for (const p of pins) {
+        if (!p.shown || p.merged || p.glow) continue
+        const d = Math.hypot(p.s.x - x, p.s.y - (tall(p) ? 16 : 0) - y)
+        if (d < bd) { bd = d; best = p }
+      }
+      if (best) onPick && onPick(best, best.members)
+      else { const at = pick(e.clientX, e.clientY); if (at && onTap) onTap(at) }
     }
     downAt = null
   }
@@ -641,6 +755,22 @@ export async function create(el, options = {}) {
     set, setTheme, setPins, flyTo, route, clearRoutes, settle, pick, setOverlay, setLayers,
     layers: () => ({ ...layers }),
     pause() { paused = true }, resume() { paused = false; needs = true },
+    drawn: () => drawn,                               // resolves once the first frame is on screen
+    setLensLabel(text) { lensEl.querySelector('span').textContent = text || '' },
+    // spin in from turns of a revolution away, settling at the view asked for
+    spinDown({ lat = view.lat, lon = view.lon, dist = view.dist, turns = 0.2, ms = 3000, fromLat = lat + 10, fromDist = dist * 1.2 } = {}) {
+      spin = false; vel = { lat: 0, lon: 0 }; flying = null
+      if (opt.calm) { Object.assign(view, { lat, lon, dist }); needs = true; return Promise.resolve() }
+      return new Promise(done => {
+        spinning = { t0: performance.now(), ms, turns, to: { lat, lon, k: dist / fit }, from: { lat: fromLat, k: fromDist / fit }, done }
+        Object.assign(view, { lat: fromLat, lon: wrap(lon + turns * 360), dist: fromDist }); needs = true
+      })
+    },
+    // the drawing-in, from the middle out (with deferReveal it waits for this)
+    reveal(ms = 1500) { born = performance.now(); revealMs = ms; uniforms.uReveal.value = opt.calm ? 1 : 0; needs = true },
+    // the globe's radius on screen at a distance, and the distance for a radius (px)
+    radiusAt: d => (H / 2) * Math.tan(Math.asin(1 / d)) / Math.tan(camera.fov * D2R / 2),
+    distFor: px => 1 / Math.sin(Math.atan(px * Math.tan(camera.fov * D2R / 2) / (H / 2))),
     jump(v) { Object.assign(view, v); flying = null; vel = { lat: 0, lon: 0 }; needs = true },
     pins: () => pins, view: () => ({ ...view }), fit: () => fit, options: () => ({ ...opt }),
     where: (lat, lon) => { const s = screen(ll(lat, lon, 1 + ground(lat, lon) + LIFT)); return { x: s.x, y: s.y, front: s.front } },

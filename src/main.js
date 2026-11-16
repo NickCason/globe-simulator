@@ -22,36 +22,84 @@ const calm = matchMedia('(prefers-reduced-motion: reduce)').matches
 const $ = (s, r = document) => r.querySelector(s)
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]))
 const today = () => new Date().toISOString().slice(0, 10)
+const sleep = ms => new Promise(r => setTimeout(r, ms))
+const fold = s => String(s || '').normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
 const fmtDate = d => d ? new Date(d + 'T12:00:00').toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' }) : ''
 
 const S = {
   g: null, places: [], entries: [], open: null, temp: null, street: null, picking: null, pending: null,
   look: (() => {
     const saved = JSON.parse(localStorage.getItem('globe-look') || '{}')
+    if (saved.v !== 2) delete saved.spin                 // drift used to be on by default; now the globe comes to rest
     return { ink: 'parchment', style: 'sketch', exaggeration: 0.062, levels: 8, hatch: true, waterlines: true, contours: true, graticule: true,
-             wobble: 1, grain: 1, boil: !calm, spin: !calm, ...saved,
+             wobble: 1, grain: 1, boil: !calm, spin: false, ...saved, v: 2,
              layers: { ...LAYERS, countries: 'borders', ...(saved.layers || {}) } }
   })(),
 }
 const saveLook = () => localStorage.setItem('globe-look', JSON.stringify(S.look))
+if (new URLSearchParams(location.search).has('debug')) window.terralogue = S      // for tests: ?debug
 
 // ---- start --------------------------------------------------------------------------------------------------------
 const ICONSHOT = new URLSearchParams(location.search).has('icon')     // for making the app icon: just the globe
 async function boot() {
   paint(INKS[S.look.ink])
+  const sp = window.__splash
   if (ICONSHOT) { document.body.classList.add('iconshot'); Object.assign(S.look, { spin: false, boil: false }) }
+  sp?.progress(0.3)
   const { ink, layers, style, ...look } = S.look
   S.g = await create($('#globe'), {
     textures: { elev: 'data/elev.jpg', mask: 'data/mask.png', coast: 'data/coast.png' }, theme: INKS[ink], calm, ...look,
-    onPick: p => p.id === 'temp' ? null : openPlace(p.id),
+    deferReveal: !!sp?.alive,
+    onPick: (p, members) => picked(p, members),
     onTap: at => tapped(at),
     onDive: at => dive(at),
+    onHold: at => lensName(at), onHoldMove: at => lensName(at), onHoldEnd: at => tapped(at, { exact: true }),
+    onView: v => keepView(v),
   })
+  sp?.progress(0.75)
   await reload()
-  if (!ICONSHOT) loadLayers()
   if (ICONSHOT) return S.g.flyTo({ lat: 28, lon: -38, dist: S.g.fit() * (new URLSearchParams(location.search).get('icon') === 'mask' ? 1.12 : 0.9) }, 10)
-  if (!S.places.length) hint()
+  await Promise.race([Promise.all([S.g.drawn(), loadLayers()]), sleep(5000)])      // the map layers too, if they come quickly
+  sp?.progress(1)
+  await land()
+  gaz.load()                                           // names for taps, the lens and search, in the background
+  if (!S.places.length) setTimeout(hint, calm ? 0 : 1500)
   if ('serviceWorker' in navigator && import.meta.env.PROD) navigator.serviceWorker.register('./sw.js').catch(() => {})
+}
+// The splash hands over: its wire globe fades as the real one draws itself in at the same size, taking the same turn at
+// the same speed, and comes gently to rest; the name flies up into the corner and the controls come in.
+async function land() {
+  const sp = window.__splash, g = S.g, body = document.body
+  if (!sp?.alive) { g.reveal(); body.classList.remove('booting'); return }
+  sp.handing = true
+  const wait = 1500 - (performance.now() - sp.t0)
+  if (wait > 0) await sleep(wait)
+  const rest = sp.rest, from = sp.lon(performance.now())
+  let T = 60, d = (((from - rest.lon - T) % 30) + 30) % 30       // the real meridians land on the wire ones (every 30°)
+  if (d > 15) d -= 30
+  T += d
+  g.reveal(calm ? 1 : 1100)
+  g.spinDown({ lat: rest.lat, lon: rest.lon, dist: g.fit(), turns: T / 360, ms: 3000 * T / sp.speed, fromLat: sp.tilt, fromDist: g.distFor(sp.R) })
+    .then(() => S.look.spin && g.spin(true))           // if you like it drifting, it drifts on from rest
+  const el = $('#splash'), h = el.querySelector('h1'), to = $('.title h1')
+  const a = h.getBoundingClientRect(), b = to.getBoundingClientRect()
+  h.style.animation = 'none'
+  body.classList.replace('booting', 'landing'); body.classList.add('entering')
+  el.classList.add('out')
+  requestAnimationFrame(() => {
+    h.style.transition = `transform ${calm ? 0.01 : 1}s cubic-bezier(.6, 0, .25, 1)`
+    h.style.transform = `translate(${b.left - a.left}px, ${b.top - a.top}px) scale(${b.width / a.width})`
+  })
+  await sleep(calm ? 60 : 1050)
+  body.classList.remove('landing')
+  el.classList.add('gone'); sp.alive = false
+  setTimeout(() => el.remove(), 700)
+  setTimeout(() => body.classList.remove('entering'), 1400)
+}
+function keepView(v) {                                  // where you leave the globe is where it comes to rest next time
+  if (S.street || window.__splash?.alive) return
+  clearTimeout(S.vt)
+  S.vt = setTimeout(() => localStorage.setItem('globe-view', JSON.stringify({ lat: Math.max(-60, Math.min(60, Math.round(v.lat * 10) / 10)), lon: Math.round(v.lon * 10) / 10 })), 700)
 }
 async function reload() {
   ;[S.places, S.entries] = await Promise.all([store.places.all(), store.entries.all()])
@@ -112,11 +160,17 @@ function closeSheet(fromHistory) {
   if (!fromHistory && history.state?.sheet) { S.ownBack = true; history.back() }   // our own step back: don't act on it
 }
 addEventListener('popstate', () => {
-  if (S.ownBack) { S.ownBack = false; return }
+  if (S.ownBack) { S.ownBack = false; const ok = S.afterBack; S.afterBack = null; ok && ok(); return }
+  if (!$('#search').hidden) return closeSearch(true)
   if ($('#sheet').classList.contains('on')) return closeSheet(true)
   if (S.street) rise()
 })
-addEventListener('keydown', e => { if (e.key === 'Escape') $('#sheet').classList.contains('on') ? closeSheet() : S.street && rise() })
+addEventListener('keydown', e => {
+  if (e.key !== 'Escape') return
+  if (!$('#search').hidden) closeSearch()
+  else if ($('#sheet').classList.contains('on')) closeSheet()
+  else if (S.street) rise()
+})
 {   // drag the grab handle: up for more, down to close
   let y0 = null, size = null
   const grab = $('#grab')
@@ -131,23 +185,37 @@ addEventListener('keydown', e => { if (e.key === 'Escape') $('#sheet').classList
   })
 }
 function hint() {
-  sheet(`<h2>Your globe is empty</h2><p class="lede">Make a place anywhere: tap the globe, or use <b>Here</b> where you stand, <b>Find</b> to look a place up,
-    or <b>Photo</b> to add pictures (they find their own place when they know where they were taken).</p>
-    <p class="muted small">Everything you add stays on this device. Back it up from the settings (top right) now and then.</p>
+  if ($('#sheet').classList.contains('on') || S.street) return
+  sheet(`<p class="eyebrow">Welcome to Terralogue</p><h2>Begin anywhere</h2>
+    <p class="lede">A journal of the world: the places you go, and the places you read about.</p>
+    <div class="steps">
+      <div>${ICON.tap}<span><b>Tap the globe</b> to make a place there</span></div>
+      <div>${ICON.hold}<span><b>Press and hold</b> to put it exactly where you mean</span></div>
+      <div>${ICON.photo}<span><b>Add photos</b>: they find their own place when they know where they were taken</span></div>
+    </div>
+    <p class="muted small">Everything stays on this device. Back it up from the settings now and then.</p>
     <div class="row"><button class="btn primary" data-act="close">Start</button><button class="btn" data-act="import">Restore a backup</button></div>`, { size: 'half' })
 }
 
 // ---- making places --------------------------------------------------------------------------------------------------
-async function tapped({ lat, lon }) {
+async function tapped({ lat, lon }, { exact } = {}) {
   if (S.street) return
   if (S.picking) { const job = S.picking; S.picking = null; return job({ lat, lon }) }
   await gaz.load()
   const d = gaz.describe(lat, lon)
-  S.temp = { lat, lon, name: d.name }
+  offer({ lat, lon, name: d.name, sub: d.sub, prec: 'exact', kind: exact ? 'exact' : 'spot' }, { fly: false })
+}
+// A spot that could be a place: a pin that pulses, and a short sheet. Nothing is kept until you say so.
+function offer(spot, { fly = true } = {}) {
+  S.temp = { lat: spot.lat, lon: spot.lon, name: spot.name }
   pins()
-  sheet(`<p class="eyebrow">A new place?</p><h2>${esc(d.name)}</h2><p class="muted">${esc(d.sub)}${d.sub ? ' · ' : ''}${gaz.coords(lat, lon)}</p>
-    <div class="row"><button class="btn primary" data-act="keepSpot">Make it a place</button><button class="btn" data-act="close">Not now</button></div>`,
-  { size: 'peek', state: { spot: { lat, lon, ...d } } })
+  if (fly) S.g.flyTo({ lat: spot.lat - (spot.prec === 'area' ? 0 : 1), lon: spot.lon, dist: S.g.fit() * (spot.prec === 'area' ? 0.62 : 0.36) }, 1500)
+  const eyebrow = { country: 'A country', town: 'A town', coords: 'Coordinates', exact: 'Right here' }[spot.kind] || 'A new place?'
+  sheet(`<p class="eyebrow">${eyebrow}</p><h2>${esc(spot.name)}</h2><p class="muted small">${esc(spot.sub)}${spot.sub ? ' · ' : ''}${gaz.coords(spot.lat, spot.lon)}</p>
+    <div class="row"><button class="btn primary" data-act="keepSpot">${ICON.pin} Make it a place</button>
+      ${spot.prec === 'area' ? '' : `<button class="btn" data-act="streets">${ICON.streets} Streets</button>`}</div>`,
+  { size: 'peek', state: { spot } })
+  S.g.select('temp')
 }
 async function makePlace({ lat, lon, name, sub, prec = 'exact', radius }) {
   const p = { id: store.id('pl'), lat, lon, name, sub: sub || '', prec, radius }
@@ -172,6 +240,33 @@ function locate() {
   })
 }
 
+function picked(p, members) {
+  const list = (members || [p]).filter(m => m.id !== 'temp')
+  if (list.length > 1) return chooser(list)
+  if (list.length) openPlace(list[0].id)
+}
+function chooser(members) {
+  const list = members.map(m => S.places.find(p => p.id === m.id)).filter(Boolean)
+  const lat = list.reduce((t, p) => t + p.lat, 0) / list.length
+  const lon = list[0].lon + list.reduce((t, p) => t + (((p.lon - list[0].lon + 540) % 360) - 180), 0) / list.length
+  S.g.select(null)
+  sheet(`<p class="eyebrow">${list.length} places, close together</p><h2>Which one?</h2>
+    <div class="results">${list.map(placeRow).join('')}</div>
+    <div class="row"><button class="btn" data-act="zoomIn" data-lat="${lat}" data-lon="${lon}">${ICON.zoom} Zoom in to see them apart</button></div>`,
+  { size: 'half', state: {} })
+}
+function placeRow(p) {
+  const n = S.entries.filter(e => e.placeId === p.id).length
+  return `<button class="res" data-act="openPlace" data-id="${p.id}"><i class="ico ${p.prec === 'area' ? 'area' : beenTo(p.id) ? 'been' : ''}">${p.prec === 'area' ? ICON.area : ICON.pin}</i>
+    <span><b>${esc(p.name)}</b><small>${esc(p.sub || gaz.coords(p.lat, p.lon))}${n ? ` · ${n} ${n === 1 ? 'entry' : 'entries'}` : ''}</small></span></button>`
+}
+function lensName(at) {
+  if (!at) return
+  clearTimeout(S.lensT)
+  const say = () => { S.lensAt = performance.now(); S.g.setLensLabel(gaz.ready() ? gaz.describe(at.lat, at.lon).name : gaz.coords(at.lat, at.lon)) }
+  performance.now() - (S.lensAt || 0) > 90 ? say() : (S.lensT = setTimeout(say, 90))
+}
+
 // ---- a place ----------------------------------------------------------------------------------------------------------
 async function openPlace(pid, { fly = true } = {}) {
   const p = S.places.find(x => x.id === pid) || await store.places.get(pid)
@@ -181,13 +276,13 @@ async function openPlace(pid, { fly = true } = {}) {
   const list = (await store.entries.of(pid)).sort(byWhen)
   const been = list.some(e => e.been)
   sheet(`<p class="eyebrow">${p.prec === 'area' ? 'An area' : been ? 'Been there' : list.length ? 'Read about' : 'A place'}</p>
-    <h2 class="pname">${esc(p.name)}</h2><p class="muted">${esc(p.sub)}${p.sub ? ' · ' : ''}${gaz.coords(p.lat, p.lon)}</p>
-    <div class="acts">
-      <button class="btn small" data-act="newEntry" data-kind="note">${ICON.note} Note</button>
-      <button class="btn small" data-act="placePhotos">${ICON.photo} Photos</button>
-      <button class="btn small" data-act="newEntry" data-kind="post">${ICON.post} Post</button>
-      ${p.prec === 'area' ? '' : `<button class="btn small" data-act="streets">${ICON.streets} Streets</button>`}
-      <button class="btn small ghost" data-act="placeMenu" aria-label="More">⋯</button>
+    <h2 class="pname">${esc(p.name)}</h2><p class="muted small">${esc(p.sub)}${p.sub ? ' · ' : ''}${gaz.coords(p.lat, p.lon)}</p>
+    <div class="tools">
+      <button data-act="newEntry" data-kind="note">${ICON.note}<span>Note</span></button>
+      <button data-act="placePhotos">${ICON.photo}<span>Photos</span></button>
+      <button data-act="newEntry" data-kind="post">${ICON.post}<span>Post</span></button>
+      ${p.prec === 'area' ? '' : `<button data-act="streets">${ICON.streets}<span>Streets</span></button>`}
+      <button data-act="placeMenu">${ICON.edit}<span>Edit</span></button>
     </div>
     <div class="entries">${list.length ? (await Promise.all(list.map(entryCard))).join('') : '<p class="muted empty">Nothing here yet. Write what you know about it, or what you saw.</p>'}</div>`,
   { size: list.length ? 'half' : 'peek', state: { place: p } })
@@ -215,11 +310,11 @@ function editor(e, { fresh = [] } = {}) {
     <div class="ephotos" id="ephotos"></div>
     <div class="grid2">
       <label class="lbl">When<input id="fWhen" class="field" type="date" value="${esc(e.when || today())}"></label>
-      <label class="lbl check"><input id="fBeen" type="checkbox" ${e.been ? 'checked' : ''}> I was there</label>
+      <label class="sw tight"><span>I was there</span><input id="fBeen" type="checkbox" ${e.been ? 'checked' : ''}><i></i></label>
     </div>
     <input id="fTags" class="field" placeholder="Tags, separated by commas" value="${esc((e.tags || []).join(', '))}">
     <textarea id="fLinks" class="field" rows="2" placeholder="Links: sources, articles, maps (one per line)">${esc((e.links || []).join('\n'))}</textarea>
-    <div class="row"><button class="btn primary" data-act="saveEntry">Save</button><button class="btn" data-act="cancelEntry">Cancel</button>
+    <div class="row stick"><button class="btn primary" data-act="saveEntry">Save</button><button class="btn" data-act="cancelEntry">Cancel</button>
       ${e.created ? '<button class="btn ghost danger" data-act="deleteEntry">Delete</button>' : ''}</div>`,
   { size: 'full', state: { place, editing: true, cleanup: () => dropFresh() } })
   drawEditorPhotos()
@@ -260,8 +355,8 @@ async function photosPicked(files, { place, intoEditor } = {}) {
   S.pending = ids
   sheet(`<p class="eyebrow">${ids.length === 1 ? 'A photo' : ids.length + ' photos'}</p><h2>Where was ${ids.length === 1 ? 'it' : 'this'} taken?</h2>
     <p class="muted">The ${ids.length === 1 ? 'photo doesn’t' : 'photos don’t'} say. (Phones often leave the location out when you pick photos in a browser.)</p>
-    <div class="row"><button class="btn primary" data-act="pendingHere">Here, where I am</button><button class="btn" data-act="pendingPick">Tap it on the globe</button>
-      <button class="btn" data-act="pendingFind">Look it up</button></div>`,
+    <div class="row"><button class="btn primary" data-act="pendingHere">${ICON.here} Here, where I am</button><button class="btn" data-act="pendingFind">${ICON.search} Look it up</button>
+      <button class="btn" data-act="pendingPick">${ICON.tap} Tap it on the globe</button></div>`,
   { size: 'peek', state: { cleanup: async () => { if (S.pending) { for (const id of S.pending) await store.photos.remove(id); S.pending = null } } } })
   S.whenPlaced = start
 }
@@ -310,13 +405,25 @@ async function lightbox(eid, i) {
 }
 
 // ---- the journal --------------------------------------------------------------------------------------------------------
-async function journal(filter = S.jfilter || 'all', q = S.jq || '') {
-  S.jfilter = filter; S.jq = q
+const JFILTERS = [['all', 'All'], ['been', 'Been there'], ['read', 'Read about'], ['photo', 'Photos'], ['post', 'Posts'], ['note', 'Notes']]
+function journal() {
+  S.jfilter ||= 'all'
+  sheet(`<div class="jhead"><h2>Journal</h2>
+      <label class="sfield">${ICON.search}<input id="jq" type="search" placeholder="Search entries, places and #tags" value="${esc(S.jq || '')}" autocomplete="off" enterkeyhint="search"></label>
+      <div class="chips">${JFILTERS.map(([k, l]) => `<button data-act="jfilter" data-f="${k}" class="${k === S.jfilter ? 'on' : ''}">${l}</button>`).join('')}</div></div>
+    <div class="entries" id="jlist"></div>`, { size: 'full', state: { journal: true } })
+  $('#jq').oninput = () => { clearTimeout(S.jt); S.jt = setTimeout(journalList, 180) }
+  $('#jq').onkeydown = e => { if (e.key === 'Enter') e.target.blur() }
+  journalList()
+}
+async function journalList() {
+  const box = $('#jlist'); if (!box) return
+  const filter = S.jfilter, q = S.jq = $('#jq')?.value || '', words = fold(q).split(/\s+/).filter(Boolean), tok = S.jtok = (S.jtok || 0) + 1
   const match = e => {
     const place = S.places.find(p => p.id === e.placeId)
     const ok = filter === 'all' || (filter === 'been' && e.been) || (filter === 'read' && !e.been) || e.kind === filter
-    const hay = [e.title, e.text, (e.tags || []).join(' '), place?.name, place?.sub].join(' ').toLowerCase()
-    return ok && (!q || q.toLowerCase().split(/\s+/).every(w => hay.includes(w)))
+    const hay = fold([e.title, e.text, (e.tags || []).map(t => '#' + t).join(' '), place?.name, place?.sub].join(' '))
+    return ok && words.every(w => hay.includes(w))
   }
   const list = S.entries.filter(match).sort(byWhen)
   let month = '', parts = []
@@ -325,30 +432,107 @@ async function journal(filter = S.jfilter || 'all', q = S.jq || '') {
     if (m !== month) { parts.push(`<h3 class="month">${m}</h3>`); month = m }
     parts.push(await entryCard(e, true))
   }
-  const html = `<h2>Journal</h2>
-    <input id="jq" class="field" type="search" placeholder="Search entries, places and #tags" value="${esc(q)}" autocomplete="off">
-    <div class="chips">${[['all', 'All'], ['been', 'Been there'], ['read', 'Read about'], ['photo', 'Photos'], ['post', 'Posts'], ['note', 'Notes']]
-      .map(([k, l]) => `<button data-act="jfilter" data-f="${k}" class="${k === filter ? 'on' : ''}">${l}</button>`).join('')}</div>
-    <div class="entries">${parts.join('') || `<p class="muted empty">${S.entries.length ? 'Nothing matches.' : 'No entries yet. Make a place, then write or add photos.'}</p>`}</div>`
-  if (S.open?.journal) { $('#sheetBody').innerHTML = html } else sheet(html, { size: 'full', state: { journal: true } })
-  const box = $('#jq'); box.oninput = () => { clearTimeout(S.jt); S.jt = setTimeout(() => journal(S.jfilter, box.value).then(() => { const b = $('#jq'); b.focus(); b.setSelectionRange(b.value.length, b.value.length) }), 250) }
+  if (tok !== S.jtok || !$('#jlist')) return               // typed again while this one was drawing
+  $('#jlist').innerHTML = parts.join('') || `<p class="muted empty">${S.entries.length ? 'Nothing matches.' : 'No entries yet. Make a place, then write or add photos.'}</p>`
 }
 
-// ---- find ----------------------------------------------------------------------------------------------------------------
-function find() {
-  sheet(`<h2>Find a place</h2><input id="fq" class="field" type="search" placeholder="A town, a city, a country…" autocomplete="off">
-    <div class="results" id="results"><p class="muted small">Towns of 15,000 people or more, and every country. Smaller places: tap them on the globe.</p></div>`,
-  { size: 'full', state: { find: true } })
-  const box = $('#fq'); box.focus()
-  gaz.load()
-  box.oninput = async () => {
-    await gaz.load()
-    const q = box.value.trim(), k = q.toLowerCase()
-    const mine = q ? S.places.filter(p => p.name.toLowerCase().includes(k)).slice(0, 5) : []
-    const hits = gaz.search(q)
-    $('#results').innerHTML = (mine.length ? `<p class="eyebrow">Your places</p>${mine.map(p => `<button class="res" data-act="openPlace" data-id="${p.id}"><b>${esc(p.name)}</b><small>${esc(p.sub)}</small></button>`).join('')}` : '') +
-      (hits.length ? `<p class="eyebrow">The world</p>${hits.map((h, i) => `<button class="res" data-act="pickResult" data-i="${i}"><b>${esc(h.name)}</b><small>${esc(h.sub)}</small></button>`).join('')}` : q ? '<p class="muted small">Nothing by that name. Try tapping it on the globe.</p>' : '')
-    S.hits = hits
+// ---- find: a search bar at the top, its results above the keyboard ---------------------------------------------------------
+// Your places first, then towns and countries from the offline gazetteer; coordinates too ("48.85, 2.35", "33.9° S 18.4° E").
+// mode 'find' offers what you pick (or opens your place); mode 'photo' puts waiting photos there.
+const SR = { mode: 'find', hits: [], at: 0 }
+function openSearch(mode = 'find') {
+  SR.mode = mode
+  const box = $('#search'), q = $('#fq')
+  q.value = ''; $('#sclear').hidden = true
+  q.placeholder = mode === 'photo' ? 'Where was it taken?' : 'A place, or coordinates'
+  box.hidden = false
+  q.focus()                                              // in the same tap, or a phone won't raise its keyboard
+  requestAnimationFrame(() => box.classList.add('on'))
+  document.body.classList.add('searching')
+  if (!history.state?.search) history.pushState({ search: 1 }, '')
+  results()
+  if (!gaz.ready()) gaz.load().then(() => !box.hidden && results())
+}
+function closeSearch(fromHistory) {
+  const box = $('#search')
+  if (box.hidden) return Promise.resolve()
+  $('#fq').blur(); box.classList.remove('on'); document.body.classList.remove('searching')
+  setTimeout(() => { if (!box.classList.contains('on')) box.hidden = true; scrollTo(0, 0) }, 260)
+  if (fromHistory || !history.state?.search) return Promise.resolve()
+  return new Promise(ok => { S.ownBack = true; S.afterBack = ok; history.back(); setTimeout(ok, 400) })   // our own step back
+}
+function parseCoords(q) {
+  const m = q.trim().match(/^(-?\d{1,2}(?:\.\d+)?)\s*°?\s*([NS])?[\s,;]+(-?\d{1,3}(?:\.\d+)?)\s*°?\s*([EW])?$/i)
+  if (!m) return null
+  let lat = +m[1], lon = +m[3]
+  if (m[2] && /s/i.test(m[2])) lat = -Math.abs(lat)
+  if (m[4] && /w/i.test(m[4])) lon = -Math.abs(lon)
+  return Math.abs(lat) <= 90 && Math.abs(lon) <= 180 ? { lat, lon } : null
+}
+const lastWhen = pid => S.entries.filter(e => e.placeId === pid).map(e => e.when || '').sort().pop() || ''
+function mark(text, q) {                                  // the part you typed, in bold
+  const i = q ? String(text).toLowerCase().indexOf(q.toLowerCase()) : -1
+  return i < 0 ? esc(text) : esc(text.slice(0, i)) + '<mark>' + esc(text.slice(i, i + q.length)) + '</mark>' + esc(text.slice(i + q.length))
+}
+function results() {
+  const q = $('#fq').value.trim(), k = fold(q), co = parseCoords(q)
+  $('#sclear').hidden = !q
+  const mine = (k ? S.places.filter(p => fold(p.name + ' ' + p.sub).includes(k))
+    .sort((a, b) => fold(b.name).startsWith(k) - fold(a.name).startsWith(k))
+    : [...S.places].sort((a, b) => lastWhen(b.id).localeCompare(lastWhen(a.id)))).slice(0, k ? 6 : 8)
+  const world = k && !co ? gaz.search(q, 14).filter(h => !S.places.some(p => p.name === h.name && gaz.km(p, h) < 15)).slice(0, 12) : []
+  SR.hits = [...(co ? [{ kind: 'coords', ...co }] : []), ...mine.map(p => ({ kind: 'mine', place: p })), ...world]
+  SR.at = 0
+  let i = 0, html = ''
+  const row = (icon, cls, name, sub) => `<button class="res${i === 0 ? ' on' : ''}" data-i="${i}" data-kind="${SR.hits[i++].kind}"><i class="ico ${cls}">${icon}</i><span><b>${name}</b><small>${sub}</small></span></button>`
+  if (co) {
+    const d = gaz.ready() ? gaz.describe(co.lat, co.lon) : null
+    html += `<p class="eyebrow">Go to</p>` + row(ICON.target, '', gaz.coords(co.lat, co.lon), esc(d ? [d.name, d.sub].filter(Boolean).join(', ') : 'Coordinates'))
+  }
+  if (mine.length) html += `<p class="eyebrow">${k ? 'Your places' : 'Your places, latest first'}</p>` +
+    mine.map(p => row(p.prec === 'area' ? ICON.area : ICON.pin, beenTo(p.id) ? 'been' : 'mine', mark(p.name, q), esc(p.sub || gaz.coords(p.lat, p.lon)))).join('')
+  if (world.length) html += `<p class="eyebrow">The world</p>` +
+    world.map(h => row(h.kind === 'country' ? ICON.area : ICON.town, '', mark(h.name, q), esc(h.kind === 'country' ? 'A country' : h.sub))).join('')
+  if (!html) html = q ? `<p class="none">${gaz.ready() ? `Nothing called “${esc(q)}”.` : 'Looking…'}<br><span>Towns of 15,000 people or more are here, and every country. For anywhere else, press and hold on the globe.</span></p>`
+    : `<p class="none">Find a town or a country, or type coordinates.<br><span>For anywhere smaller, press and hold on the globe.</span></p>`
+  $('#results').innerHTML = html
+}
+function highlight(n) {
+  const rows = [...$('#results').querySelectorAll('.res')]; if (!rows.length) return
+  SR.at = (n + rows.length) % rows.length
+  rows.forEach((r, j) => r.classList.toggle('on', j === SR.at)); rows[SR.at].scrollIntoView({ block: 'nearest' })
+}
+async function choose(i) {
+  const h = SR.hits[i]; if (!h) return
+  const mode = SR.mode
+  await closeSearch()
+  if (S.street) await rise()
+  const spot = h.kind === 'country' ? { lat: h.lat, lon: h.lon, name: h.name, sub: '', prec: 'area', radius: h.radius, kind: 'country' }
+    : h.kind === 'coords' ? { lat: h.lat, lon: h.lon, ...(await gaz.load(), gaz.describe(h.lat, h.lon)), prec: 'exact', kind: 'coords' }
+    : h.kind === 'town' ? { lat: h.lat, lon: h.lon, name: h.name, sub: h.sub, prec: 'town', kind: 'town' } : null
+  if (mode === 'photo') {
+    if (!S.pending) return
+    return pendingTo(h.kind === 'mine' ? h.place : await makePlace(spot))
+  }
+  if (h.kind === 'mine') return openPlace(h.place.id)
+  offer(spot)
+}
+{
+  const q = $('#fq')
+  q.addEventListener('input', () => results())
+  q.addEventListener('keydown', e => {
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); highlight(SR.at + (e.key === 'ArrowDown' ? 1 : -1)) }
+    else if (e.key === 'Enter') { e.preventDefault(); choose(SR.at) }
+  })
+  $('#results').addEventListener('click', e => { const b = e.target.closest('.res'); if (b) choose(+b.dataset.i) })
+  $('#results').addEventListener('touchstart', () => q.blur(), { passive: true })     // scrolling the results puts the keyboard away
+  $('#sclear').onclick = () => { q.value = ''; results(); q.focus() }
+  $('#scancel').onclick = () => closeSearch()
+  if (window.visualViewport) {                           // the overlay fits the space above the keyboard
+    const vv = visualViewport, fit = () => {
+      document.documentElement.style.setProperty('--vvh', vv.height + 'px'); document.documentElement.style.setProperty('--vvt', vv.offsetTop + 'px')
+    }
+    vv.addEventListener('resize', fit); vv.addEventListener('scroll', fit); fit()
   }
 }
 
@@ -410,19 +594,23 @@ async function settings() {
   const u = await store.usage()
   const mb = n => (n / 1048576).toFixed(n > 1048576 * 10 ? 0 : 1)
   const persisted = navigator.storage?.persisted ? await navigator.storage.persisted() : false
+  const photos = S.entries.reduce((n, e) => n + (e.photos || []).length, 0)
   sheet(`<h2>Settings</h2>
-    <p class="eyebrow">Your journal</p>
-    <p class="small">Everything stays on this device${u ? `: about ${mb(u.usage || 0)} MB used` : ''}. ${persisted ? 'The browser has agreed to keep it.' : 'Back it up now and then: a browser can clear a site’s data.'}</p>
-    <div class="row"><button class="btn" data-act="export">Export a backup</button><button class="btn" data-act="import">Import a backup</button></div>
-    <p class="eyebrow">About</p>
-    <p class="small muted">A hand-drawn globe for keeping notes, photos and posts about anywhere. Relief: ETOPO1 and GMTED2010 (AWS Terrain Tiles).
-      Coasts, countries and map labels: Natural Earth. Towns: GeoNames (CC BY 4.0). Streets: OpenFreeMap, © OpenMapTiles, © OpenStreetMap contributors. Built with three.js.</p>`,
+    <section class="group"><h3>Your journal</h3>
+      <div class="stats"><span><b>${S.places.length}</b>${S.places.length === 1 ? 'place' : 'places'}</span><span><b>${S.entries.length}</b>${S.entries.length === 1 ? 'entry' : 'entries'}</span><span><b>${photos}</b>${photos === 1 ? 'photo' : 'photos'}</span>${u ? `<span><b>${mb(u.usage || 0)}</b>MB</span>` : ''}</div>
+      <p class="small">Everything stays on this device. ${persisted ? 'The browser has agreed to keep it.' : 'Back it up now and then: a browser can clear a site’s data.'}</p>
+      <div class="row"><button class="btn" data-act="export">${ICON.down} Export a backup</button><button class="btn" data-act="import">${ICON.up} Import a backup</button></div></section>
+    <section class="group"><h3>About</h3>
+      <p class="small muted">A hand-drawn globe for keeping notes, photos and posts about anywhere. Relief: ETOPO1 and GMTED2010 (AWS Terrain Tiles).
+      Coasts, countries and map labels: Natural Earth. Towns: GeoNames (CC BY 4.0). Streets: OpenFreeMap, © OpenMapTiles, © OpenStreetMap contributors. Built with three.js.</p></section>`,
   { size: 'full', state: { settings: true } })
 }
 
 // ---- the map: ink, style and layers, every part adjustable --------------------------------------------------------------
 const seg = (key, opts, cur, act = 'lseg') => `<div class="seg">${opts.map(([v, l]) => `<button data-act="${act}" data-k="${key}" data-v="${v}" class="${cur === v ? 'on' : ''}">${l}</button>`).join('')}</div>`
-const range = (id, label, min, max, step, val, show) => `<label class="lbl">${label} <output id="${id}v">${show(val)}</output><input data-range="${id}" type="range" min="${min}" max="${max}" step="${step}" value="${val}"></label>`
+const fill = (v, min, max) => `--p:${((v - min) / (max - min) * 100).toFixed(1)}%`
+const range = (id, label, min, max, step, val, show) => `<label class="lbl rng">${label} <output id="${id}v">${show(val)}</output><input data-range="${id}" type="range" min="${min}" max="${max}" step="${step}" value="${val}" style="${fill(val, min, max)}"></label>`
+const sw = (attr, key, label, on) => `<label class="sw"><span>${label}</span><input type="checkbox" ${attr}="${key}" ${on ? 'checked' : ''}><i></i></label>`
 const RANGES = {
   ex: { get: () => S.look.exaggeration, set: v => { S.look.exaggeration = v; S.g.set({ exaggeration: v }) }, show: v => '×' + Math.round(v / 0.0014) },
   lv: { get: () => S.look.levels, set: v => { S.look.levels = v; S.g.set({ levels: v }) }, show: v => v },
@@ -439,29 +627,28 @@ function mapSheet() {
   const L = S.look.layers
   const r = (id, label, min, max, step) => range(id, label, min, max, step, RANGES[id].get(), RANGES[id].show)
   sheet(`<h2>The map</h2>
-    <p class="eyebrow">Ink</p><div class="inks">${Object.entries(INKS).map(([k, t]) => `<button data-act="ink" data-ink="${k}" class="${k === S.look.ink ? 'on' : ''}" style="--p:${t.paper};--i:${t.ink};--a:${t.accent}"><i></i>${t.name}</button>`).join('')}</div>
-    <p class="eyebrow">Style</p>${seg('style', Object.entries(STYLES).map(([k, v]) => [k, v.name]), S.look.style, 'style')}
-    ${r('wb', 'Wobble', 0, 1.5, 0.05)}${r('gr', 'Paper grain', 0, 1.5, 0.05)}
-    <div class="toggles">${LOOK.map(([k, l]) => `<label><input type="checkbox" data-look="${k}" ${S.look[k] ? 'checked' : ''}> ${l}</label>`).join('')}</div>
-    <p class="eyebrow">Relief</p>${r('ex', 'Height', 0, 0.14, 0.002)}${r('lv', 'Terraces', 2, 16, 1)}
-    <p class="eyebrow">Countries</p>${seg('countries', [['off', 'Off'], ['borders', 'Borders'], ['fill', 'Coloured']], L.countries)}
-    <div class="chips pal" ${L.countries === 'fill' ? '' : 'hidden'}>${[['political', 'Political'], ['continents', 'By continent'], ['tint', 'One tint'], ['pastel', 'Pastel']].map(([k, l]) => `<button data-act="lseg" data-k="palette" data-v="${k}" class="${L.palette === k ? 'on' : ''}">${l}</button>`).join('')}</div>
-    <div ${L.countries === 'fill' ? '' : 'hidden'} class="palopt">${r('fs', 'Colour strength', 0.1, 1, 0.05)}</div>
-    <div ${L.countries === 'off' ? 'hidden' : ''} class="bopt">${r('bw', 'Border width', 0.4, 4, 0.1)}${r('ba', 'Border ink', 0.1, 1, 0.05)}
-      <div class="toggles"><label><input type="checkbox" data-layer="borderDash" ${L.borderDash ? 'checked' : ''}> Dashed borders</label></div></div>
-    <p class="eyebrow">Labels</p>
-    <div class="toggles"><label><input type="checkbox" data-layer="continentLabels" ${L.continentLabels ? 'checked' : ''}> Continents</label>
-      <label><input type="checkbox" data-layer="countryLabels" ${L.countryLabels ? 'checked' : ''}> Countries</label>
-      <label><input type="checkbox" data-layer="regionLabels" ${L.regionLabels ? 'checked' : ''}> Ranges, deserts…</label>
-      <label><input type="checkbox" data-layer="rivers" ${L.rivers ? 'checked' : ''}> Rivers</label></div>
-    <span class="lbl">Seas</span>${seg('seaLabels', [['off', 'Off'], ['oceans', 'Oceans'], ['seas', 'Oceans & seas']], L.seaLabels)}
-    ${r('ls', 'Label size', 0.7, 1.6, 0.05)}${r('dn', 'How many labels', -1, 2, 0.5)}
+    <section class="group"><h3>Ink</h3><div class="inks">${Object.entries(INKS).map(([k, t]) => `<button data-act="ink" data-ink="${k}" class="${k === S.look.ink ? 'on' : ''}" style="--p:${t.paper};--i:${t.ink};--a:${t.accent}"><i></i>${t.name}</button>`).join('')}</div></section>
+    <section class="group"><h3>Style</h3>${seg('style', Object.entries(STYLES).map(([k, v]) => [k, v.name]), S.look.style, 'style')}
+      ${r('wb', 'Wobble', 0, 1.5, 0.05)}${r('gr', 'Paper grain', 0, 1.5, 0.05)}
+      <div class="sws">${LOOK.map(([k, l]) => sw('data-look', k, l, S.look[k])).join('')}</div></section>
+    <section class="group"><h3>Relief</h3>${r('ex', 'Height', 0, 0.14, 0.002)}${r('lv', 'Terraces', 2, 16, 1)}</section>
+    <section class="group"><h3>Countries</h3>${seg('countries', [['off', 'Off'], ['borders', 'Borders'], ['fill', 'Coloured']], L.countries)}
+      <div class="chips pal" ${L.countries === 'fill' ? '' : 'hidden'}>${[['political', 'Political'], ['continents', 'By continent'], ['tint', 'One tint'], ['pastel', 'Pastel']].map(([k, l]) => `<button data-act="lseg" data-k="palette" data-v="${k}" class="${L.palette === k ? 'on' : ''}">${l}</button>`).join('')}</div>
+      <div ${L.countries === 'fill' ? '' : 'hidden'} class="palopt">${r('fs', 'Colour strength', 0.1, 1, 0.05)}</div>
+      <div ${L.countries === 'off' ? 'hidden' : ''} class="bopt">${r('bw', 'Border width', 0.4, 4, 0.1)}${r('ba', 'Border ink', 0.1, 1, 0.05)}
+        <div class="sws">${sw('data-layer', 'borderDash', 'Dashed borders', L.borderDash)}</div></div></section>
+    <section class="group"><h3>Labels</h3>
+      <div class="sws">${sw('data-layer', 'continentLabels', 'Continents', L.continentLabels)}${sw('data-layer', 'countryLabels', 'Countries', L.countryLabels)}
+        ${sw('data-layer', 'regionLabels', 'Ranges, deserts…', L.regionLabels)}${sw('data-layer', 'rivers', 'Rivers', L.rivers)}</div>
+      <span class="lbl">Seas</span>${seg('seaLabels', [['off', 'Off'], ['oceans', 'Oceans'], ['seas', 'Oceans & seas']], L.seaLabels)}
+      ${r('ls', 'Label size', 0.7, 1.6, 0.05)}${r('dn', 'How many labels', -1, 2, 0.5)}</section>
     <div class="row"><button class="btn ghost" data-act="resetMap">Reset the map</button></div>`,
   { size: 'full', state: { map: true } })
   const body = $('#sheetBody')
   body.oninput = e => {
     const id = e.target.dataset.range; if (!id) return
     const v = +e.target.value; RANGES[id].set(v); $('#' + id + 'v').textContent = RANGES[id].show(v); saveLook()
+    e.target.style.cssText = fill(v, +e.target.min, +e.target.max)
   }
   body.onchange = e => {
     const k = e.target.dataset.look, l = e.target.dataset.layer
@@ -476,12 +663,24 @@ const ICON = {
   photo: '<svg viewBox="0 0 24 24"><path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.4"/></svg>',
   post: '<svg viewBox="0 0 24 24"><path d="M5 5h14M5 10h14M5 15h9M5 20h6"/></svg>',
   streets: '<svg viewBox="0 0 24 24"><path d="M3 9h18M3 16h18M8 3v18M16 3v18"/></svg>',
+  edit: '<svg viewBox="0 0 24 24"><path d="M4 20h4L19 9l-4-4L4 16z"/><path d="m13.5 6.5 4 4"/></svg>',
+  pin: '<svg viewBox="0 0 24 24"><path d="M12 21c-.7-4.2-7-8-7-13a7 7 0 0 1 14 0c0 5-6.3 8.8-7 13z"/><circle cx="12" cy="8.5" r="2.4"/></svg>',
+  area: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5" stroke-dasharray="2.5 3"/><circle cx="12" cy="12" r="2.2"/></svg>',
+  town: '<svg viewBox="0 0 24 24"><path d="M4 20V10l5-3v13M9 20V5l7-2v17M16 20v-9l4 2v7M3 20h18"/></svg>',
+  target: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="7"/><path d="M12 2v5M12 17v5M2 12h5M17 12h5"/></svg>',
+  search: '<svg viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="M15.5 15.5 21 21"/></svg>',
+  here: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><circle cx="12" cy="12" r="8"/><path d="M12 1v3M12 20v3M1 12h3M20 12h3"/></svg>',
+  tap: '<svg viewBox="0 0 24 24"><circle cx="12" cy="9" r="2.5"/><path d="M12 3.5v-1M17.5 9h1M6.5 9h-1M15.9 5.1l.7-.7M8.1 5.1l-.7-.7"/><path d="M10 21l-1.5-5.5a1.4 1.4 0 0 1 2.6-1l.9 1.8V11a1.3 1.3 0 0 1 2.6 0v3l2.3.6a2 2 0 0 1 1.5 2.3L17.6 21"/></svg>',
+  hold: '<svg viewBox="0 0 24 24"><circle cx="10" cy="10" r="6.5"/><path d="M14.7 14.7 20 20M10 7v6M7 10h6"/></svg>',
+  zoom: '<svg viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="M15.5 15.5 21 21M10.5 7.5v6M7.5 10.5h6"/></svg>',
+  down: '<svg viewBox="0 0 24 24"><path d="M12 4v11M7 10.5l5 5 5-5M5 20h14"/></svg>',
+  up: '<svg viewBox="0 0 24 24"><path d="M12 15.5V4.5M7 9l5-5 5 5M5 20h14"/></svg>',
 }
 const ACT = {
   close: () => closeSheet(),
   keepSpot: async () => {
     const s = S.open.spot; S.temp = null
-    const p = await makePlace({ lat: s.lat, lon: s.lon, name: s.name, sub: s.sub })
+    const p = await makePlace({ lat: s.lat, lon: s.lon, name: s.name, sub: s.sub, prec: s.prec, radius: s.radius })
     if (S.street) S.street.setPlaces(nearbyPlaces(s.lat, s.lon, S.streetSkip))
     openPlace(p.id, { fly: !S.street })
   },
@@ -517,7 +716,12 @@ const ACT = {
   viewEntry: el => viewEntry(el.dataset.id),
   editEntry: async el => editor(await store.entries.get(el.dataset.id)),
   lightbox: el => lightbox(el.dataset.id, +el.dataset.i),
-  streets: () => diveTo(S.open.place),
+  streets: () => diveTo(S.open.place || S.open.spot),
+  zoomIn: el => {
+    closeSheet()
+    const v = S.g.view()
+    S.g.flyTo({ lat: +el.dataset.lat, lon: +el.dataset.lon, dist: Math.max(S.g.options().minDist, 1 + (v.dist - 1) / 3.5) }, 1300)
+  },
   lseg: el => {
     for (const b of el.parentElement.children) b.classList.toggle('on', b === el)
     layer({ [el.dataset.k]: el.dataset.v })
@@ -529,7 +733,7 @@ const ACT = {
     mapSheet()
   },
   resetMap: () => {
-    Object.assign(S.look, STYLES.sketch.set, { style: 'sketch', exaggeration: 0.062, levels: 8, graticule: true, spin: !calm, layers: { ...LAYERS, countries: 'borders' } })
+    Object.assign(S.look, STYLES.sketch.set, { style: 'sketch', exaggeration: 0.062, levels: 8, graticule: true, spin: false, layers: { ...LAYERS, countries: 'borders' } })
     S.g.set(S.look); S.g.setLayers(S.look.layers); saveLook(); mapSheet()
   },
   placeMenu: () => {
@@ -546,18 +750,14 @@ const ACT = {
     if (!confirm(n ? `Delete ${p.name} and its ${n} ${n === 1 ? 'entry' : 'entries'}? This can’t be undone.` : `Delete ${p.name}?`)) return
     await store.places.remove(p.id); await reload(); closeSheet(); toast('Deleted.')
   },
-  jfilter: el => journal(el.dataset.f, $('#jq')?.value || ''),
-  pickResult: async el => {
-    const h = S.hits[+el.dataset.i]
-    const same = S.places.find(p => p.name === h.name && gaz.km(p, h) < 15)
-    if (same) return openPlace(same.id)
-    const p = await makePlace({ lat: h.lat, lon: h.lon, name: h.name, sub: h.kind === 'country' ? '' : h.sub, prec: h.kind === 'country' ? 'area' : 'town', radius: h.radius })
-    if (S.pending) return pendingTo(p)
-    openPlace(p.id)
+  jfilter: el => {
+    S.jfilter = el.dataset.f
+    for (const b of el.parentElement.children) b.classList.toggle('on', b === el)
+    journalList()
   },
   pendingHere: async () => { try { toast('Finding you…', 1500); const at = await locate(); pendingTo(await placeNear(at.lat, at.lon)) } catch (err) { toast(err.message, 4000) } },
   pendingPick: () => { $('#sheet').classList.remove('on'); document.body.classList.remove('sheeted'); toast('Tap where it was taken.', 4000); S.picking = async at => pendingTo(await placeNear(at.lat, at.lon, 0.5)) },
-  pendingFind: () => { const keep = S.pending; S.open.cleanup = null; find(); S.pending = keep },
+  pendingFind: () => openSearch('photo'),
   ink: el => {
     S.look.ink = el.dataset.ink; saveLook()
     const t = INKS[S.look.ink], run = () => { S.g.setTheme(t); paint(t); S.street?.setTheme(streetTheme()); for (const b of el.parentElement.children) b.classList.toggle('on', b === el) }
@@ -579,7 +779,7 @@ $('#dock').addEventListener('click', async e => {
   const b = e.target.closest('[data-do]'); if (!b) return
   const what = b.dataset.do
   if (S.street && what === 'here') await rise()
-  if (what === 'find') return find()
+  if (what === 'find') return openSearch()
   if (what === 'journal') return journal()
   if (what === 'photo') { S.pickFor = S.open?.place ? { place: S.open.place } : {}; return $('#pickPhotos').click() }
   if (what === 'here') {
@@ -604,4 +804,7 @@ $('#pickBackup').onchange = async e => {
   try { const n = await store.importAll(f); await reload(); toast(`Imported ${n} ${n === 1 ? 'thing' : 'things'}.`, 3000); closeSheet() } catch (err) { toast(err.message || 'That backup couldn’t be read.', 4000) }
 }
 
-boot().catch(err => { $('#globe').innerHTML = `<p class="nogl">This browser can’t draw the globe (it needs WebGL 2).<br><small>${esc(err.message || err)}</small></p>` })
+boot().catch(err => {
+  if (window.__splash) window.__splash.alive = false
+  $('#splash')?.remove(); document.body.classList.remove('booting')
+  $('#globe').innerHTML = `<p class="nogl">This browser can’t draw the globe (it needs WebGL 2).<br><small>${esc(err.message || err)}</small></p>` })

@@ -29,7 +29,12 @@ const count = () => pg.evaluate(() => new Promise(ok => { const r = indexedDB.op
   const t = r.result.transaction(['places', 'entries'], 'readonly'); const a = t.objectStore('places').count(), b = t.objectStore('entries').count()
   t.oncomplete = () => ok([a.result, b.result]) } }))
 
-await pg.goto(URL_); await pg.waitForTimeout(4500)
+await pg.goto(URL_); await pg.waitForTimeout(700)
+await shot('00-splash')
+await step('the splash hands over', async () => {
+  await pg.waitForSelector('#splash', { state: 'detached', timeout: 25000 })
+  await pg.waitForSelector('text=Start', { timeout: 10000 })
+})
 await shot('01-start')
 await step('start', () => pg.click('text=Start'))
 await pg.waitForTimeout(1500)
@@ -53,6 +58,17 @@ await step('a photo that doesn’t', async () => {
   await shot('07-where'); await pg.click('text=Look it up'); await pg.fill('#fq', 'reykjav'); await pg.waitForTimeout(1500)
   await pg.click('.res >> nth=0'); await pg.waitForTimeout(2200); await pg.click('text=Save'); await pg.waitForTimeout(1200)
 })
+await step('press and hold for an exact spot', async () => {
+  await pg.keyboard.press('Escape'); await pg.waitForTimeout(400)
+  await pg.mouse.move(150, 330); await pg.mouse.down(); await pg.waitForTimeout(900)
+  await pg.mouse.move(160, 340, { steps: 4 }); await pg.waitForTimeout(500)
+  if (!(await pg.locator('.lens.on').count())) throw new Error('no lens while holding')
+  await shot('07b-lens')
+  await pg.mouse.up(); await pg.waitForTimeout(1000)
+  const eyebrow = await pg.locator('#sheet.on .eyebrow').first().innerText()
+  if (!/right here/i.test(eyebrow)) throw new Error('holding should offer the exact spot, got ' + eyebrow)
+  await shot('07c-held'); await pg.click('text=Make it a place'); await pg.waitForTimeout(800)
+})
 await step('here', async () => {
   await pg.keyboard.press('Escape'); await pg.waitForTimeout(400)
   await pg.click('[data-do=here]'); await pg.waitForTimeout(2600); await shot('08-here')
@@ -66,13 +82,17 @@ await step('the journal', async () => {
 })
 await step('find a country', async () => {
   await pg.keyboard.press('Escape'); await pg.waitForTimeout(400)
-  await pg.click('[data-do=find]'); await pg.fill('#fq', 'japan'); await pg.waitForTimeout(600); await pg.click('.res >> nth=0'); await pg.waitForTimeout(2200)
+  await pg.click('[data-do=find]'); await pg.waitForTimeout(300); await pg.fill('#fq', 'lond'); await pg.waitForTimeout(500); await shot('11a-search')
+  await pg.fill('#fq', '48.8566, 2.3522'); await pg.waitForTimeout(300); await shot('11b-coords')
+  if (!/48\.857°N/.test(await pg.locator('.res >> nth=0').innerText())) throw new Error('coordinates should be a result')
+  await pg.fill('#fq', 'japan'); await pg.waitForTimeout(600); await pg.click('.res[data-kind=country] >> nth=0'); await pg.waitForTimeout(2200)
+  await pg.click('text=Make it a place'); await pg.waitForTimeout(1500)
   await shot('11-area')
 })
 await step('down to the streets and back', async () => {
   await pg.keyboard.press('Escape'); await pg.waitForTimeout(300)
   await pg.click('[data-do=find]'); await pg.fill('#fq', 'toledo'); await pg.waitForTimeout(900)
-  await pg.locator('.res').filter({ hasText: 'Ohio' }).first().click(); await pg.waitForTimeout(2200)
+  await pg.locator('.res[data-kind=town]').filter({ hasText: 'Ohio' }).first().click(); await pg.waitForTimeout(2200)
   await pg.click('[data-act=streets]'); await pg.waitForTimeout(6000); await shot('12-streets')
   if (!(await pg.locator('.street canvas').count())) throw new Error('no street map')
   await pg.mouse.click(200, 420); await pg.waitForTimeout(1200)
@@ -83,7 +103,29 @@ await step('down to the streets and back', async () => {
   await pg.click('#globeback'); await pg.waitForTimeout(2200)
   if (await pg.locator('.street').count()) throw new Error('still in the streets after Globe')
 })
+await step('pins too close to tell apart', async () => {
+  await pg.keyboard.press('Escape'); await pg.waitForTimeout(300)
+  await pg.click('[data-do=find]'); await pg.fill('#fq', 'versailles'); await pg.waitForTimeout(500)
+  await pg.locator('.res[data-kind=town]').filter({ hasText: 'France' }).first().click(); await pg.waitForTimeout(2000)
+  await pg.click('text=Make it a place'); await pg.waitForTimeout(800)
+  await pg.keyboard.press('Escape'); await pg.waitForTimeout(600)
+  await pg.mouse.move(195, 300)
+  for (let i = 0; i < 14; i++) { await pg.mouse.wheel(0, 300); await pg.waitForTimeout(60) }
+  await pg.waitForTimeout(900); await shot('12e-merged')
+  const lead = pg.locator('.gpin:has(b:not(:empty))').first()
+  if (!(await lead.count())) throw new Error('no merged pin')
+  await lead.evaluate(el => el.click()); await pg.waitForTimeout(700)
+  const asked = await pg.locator('#sheet.on .eyebrow').first().innerText()
+  if (!/close together/i.test(asked)) throw new Error('a merged pin should ask which one, got ' + asked)
+  await shot('12f-which')
+  const tags = await pg.evaluate(() => [...document.querySelectorAll('.gpin.near span')].map(s => s.getBoundingClientRect()).filter(r => r.width))
+  for (let i = 0; i < tags.length; i++) for (let j = i + 1; j < tags.length; j++) {
+    const a = tags[i], b = tags[j]
+    if (a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom) throw new Error('two name tags overlap')
+  }
+})
 await step('map layers and style', async () => {
+  await pg.keyboard.press('Escape'); await pg.waitForTimeout(500)
   await pg.click('#mapbtn'); await pg.waitForTimeout(500)
   await pg.click('[data-act=lseg][data-k=countries][data-v=fill]'); await pg.click('[data-act=lseg][data-k=seaLabels][data-v=seas]')
   await pg.click('[data-act=style][data-v=clean]'); await pg.waitForTimeout(400); await shot('12c-mapsheet')

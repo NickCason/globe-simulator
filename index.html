@@ -11,11 +11,110 @@
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-title" content="Terralogue">
   <title>Terralogue</title>
+  <script>
+    // the ink you chose, before anything is drawn (the same colours as INKS in src/main.js), so the splash wears it too
+    try {
+      var ink = (JSON.parse(localStorage.getItem('globe-look') || '{}') || {}).ink
+      var t = { slate: ['#1B1612', '#F1E6D2', '#E07A4F', '#B3A085', 1], blueprint: ['#163A5F', '#E8F1FA', '#FFD166', '#A9C3DD', 1],
+                sepia: ['#FBF5E8', '#5A3A22', '#8C2F1B', '#8A6F55', 0] }[ink]
+      if (t) {
+        var r = document.documentElement
+        ;['paper', 'ink', 'accent', 'muted'].forEach(function (k, i) { r.style.setProperty('--' + k, t[i]) })
+        if (t[4]) r.classList.add('dark')
+        document.querySelector('meta[name=theme-color]').content = t[0]
+      }
+    } catch (e) {}
+  </script>
   <link rel="stylesheet" href="./src/style.css">
 </head>
-<body>
+<body class="booting">
+  <div class="splash" id="splash" aria-hidden="true">
+    <canvas id="splashGlobe"></canvas>
+    <div class="mark"><h1>Terralogue</h1><p>A visual journal of the world</p><i class="bar"><b id="splashBar"></b></i></div>
+  </div>
+  <script>
+    // The splash: a pen-drawn wire globe, turning while the real one loads. Inline, so it's up at once; src/main.js
+    // hands over from it (window.__splash) and the real globe takes the turn and comes gently to rest.
+    (function () {
+      var S = window.__splash = { t0: performance.now(), speed: 60, want: 0.08, shown: 0, alive: true }
+      if (/[?&]icon/.test(location.search)) { document.getElementById('splash').remove(); S.alive = false; return }
+      var calm = matchMedia('(prefers-reduced-motion: reduce)').matches
+      // where the globe will come to rest: where you left it, or else your side of the world (from the time zone)
+      var rest = null
+      try { rest = JSON.parse(localStorage.getItem('globe-view')) } catch (e) {}
+      if (!rest || typeof rest.lat !== 'number') {
+        var tz = ''; try { tz = Intl.DateTimeFormat().resolvedOptions().timeZone || '' } catch (e) {}
+        var south = /Australia|Auckland|Sao_Paulo|Argentina|Buenos_Aires|Santiago|Johannesburg|Lima|Montevideo|Fiji|Harare|Maputo|Windhoek|Luanda|La_Paz|Asuncion/.test(tz)
+        rest = { lat: south ? -24 : 26, lon: Math.max(-170, Math.min(170, -new Date().getTimezoneOffset() / 4)) }
+      }
+      S.rest = rest; S.tilt = rest.lat + 10
+      var cv = document.getElementById('splashGlobe'), g = cv.getContext('2d'), bar = document.getElementById('splashBar')
+      var css = getComputedStyle(document.documentElement), inkC = css.getPropertyValue('--ink').trim() || '#2B231D'
+      var accent = css.getPropertyValue('--accent').trim() || '#B4532F'
+      var W = 0, H = 0, R = 0, dpr = Math.min(devicePixelRatio || 1, 2)
+      function size() {
+        W = innerWidth; H = innerHeight; cv.width = W * dpr; cv.height = H * dpr; g.setTransform(dpr, 0, 0, dpr, 0, 0)
+        R = S.R = Math.max(96, Math.min(250, Math.min(W, H) * 0.32))
+        document.documentElement.style.setProperty('--splash-r', R + 'px')
+      }
+      size(); addEventListener('resize', size)
+      S.lon = function (now) { return 200 - S.speed * ((now || performance.now()) - S.t0) / 1000 }   // the middle of the view, turning east
+      S.progress = function (f) { S.want = Math.max(S.want, Math.min(1, f)) }
+      var D = Math.PI / 180
+      function draw(now) {
+        if (!S.alive) return
+        var t = (now - S.t0) / 1000, cx = W / 2, cy = H / 2
+        var lon0 = S.lon(now) * D, tilt = S.tilt * D, ct = Math.cos(tilt), st = Math.sin(tilt)
+        var pen = calm ? 1 : Math.min(1, t / 0.9), lines = calm ? 1 : Math.max(0, Math.min(1, (t - 0.35) / 0.8))
+        g.clearRect(0, 0, W, H); g.lineCap = 'round'; g.lineJoin = 'round'
+        // a point on the sphere -> screen, and whether it faces us
+        function P(la, lo) {
+          var x = Math.cos(la) * Math.sin(lo - lon0), y = Math.sin(la), z = Math.cos(la) * Math.cos(lo - lon0)
+          return [cx + R * x, cy - R * (y * ct - z * st), y * st + z * ct]
+        }
+        function curve(fn, n, front) {
+          g.beginPath(); var on = false
+          for (var i = 0; i <= n; i++) {
+            var p = fn(i / n)
+            if ((p[2] >= 0) === front) { on ? g.lineTo(p[0], p[1]) : g.moveTo(p[0], p[1]); on = true } else on = false
+          }
+          g.stroke()
+        }
+        g.strokeStyle = inkC
+        for (var pass = 0; pass < 2; pass++) {             // the far side faintly, then the near side
+          var front = pass === 1
+          g.globalAlpha = (front ? 0.42 : 0.1) * lines; g.lineWidth = front ? 1.1 : 0.9
+          g.setLineDash(front ? [] : [2, 4])
+          for (var m = 0; m < 12; m++) (function (lo) { curve(function (f) { return P((-80 + 160 * f) * D, lo) }, 48, front) })(m * 30 * D)
+          for (var la = -60; la <= 60; la += 30) (function (a) { curve(function (f) { return P(a * D, f * 2 * Math.PI) }, 96, front) })(la)
+        }
+        g.setLineDash([])
+        // the outline, drawn round like a pen (two loose circles, as on the real globe)
+        for (var k = 0; k < 2; k++) {
+          g.globalAlpha = k ? 0.3 : 0.85; g.lineWidth = k ? 1 : 1.6
+          g.beginPath()
+          var end = Math.max(0.001, Math.min(1, pen * 1.15 - k * 0.15)) * 72
+          for (var i = 0; i <= end; i++) {
+            var a = -Math.PI / 2 + i / 72 * Math.PI * 2, r = R * (1 + k * 0.03) + Math.sin(i * 91.7 + k * 7 + Math.floor(t * 7) * 3.1) * 0.7
+            i ? g.lineTo(cx + Math.cos(a) * r, cy + Math.sin(a) * r) : g.moveTo(cx + Math.cos(a) * r, cy + Math.sin(a) * r)
+          }
+          g.stroke()
+        }
+        // a little arc of accent on the turning edge, like a highlight
+        g.globalAlpha = 0.9 * lines; g.strokeStyle = accent; g.lineWidth = 2
+        g.beginPath(); g.arc(cx, cy, R * 1.075, -Math.PI * 0.62 + (calm ? 0 : t * 0.5), -Math.PI * 0.38 + (calm ? 0 : t * 0.5)); g.stroke()
+        g.globalAlpha = 1
+        S.shown += (S.want - S.shown) * 0.08
+        bar.style.transform = 'scaleX(' + S.shown.toFixed(3) + ')'
+        requestAnimationFrame(draw)
+      }
+      requestAnimationFrame(draw)
+      // if the app never takes over (a browser that can't run it), don't leave the splash up forever
+      setTimeout(function () { if (S.alive && !S.handing) { var el = document.getElementById('splash'); if (el) el.classList.add('gone'); document.body.classList.remove('booting') } }, 20000)
+    })()
+  </script>
   <main id="stage">
-    <div id="globe" class="globe" aria-label="Your globe: drag to turn, pinch or scroll to zoom, tap a spot to make a place"></div>
+    <div id="globe" class="globe" aria-label="Your globe: drag to turn, pinch or scroll to zoom, tap a spot to make a place, press and hold to place exactly"></div>
     <header class="title"><h1>Terralogue</h1><p id="tally">a visual journal of the world</p></header>
     <button class="corner" id="mapbtn" aria-label="The map: ink, style and layers">
       <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M12 3 3 8l9 5 9-5z"/><path d="m3 12.5 9 5 9-5M3 16.5l9 5 9-5"/></svg>
@@ -32,7 +131,20 @@
       <button data-do="photo" class="main"><svg viewBox="0 0 24 24"><path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.6"/></svg><span>Photo</span></button>
       <button data-do="journal"><svg viewBox="0 0 24 24"><path d="M5 4h11a3 3 0 0 1 3 3v13H8a3 3 0 0 1-3-3z"/><path d="M5 17a3 3 0 0 1 3-3h11M9 8h6"/></svg><span>Journal</span></button>
     </nav>
-    <section class="sheet" id="sheet" aria-live="polite"><div class="grab" id="grab"></div><div class="sheet-body" id="sheetBody"></div></section>
+    <section class="sheet" id="sheet" aria-live="polite">
+      <div class="grab" id="grab"></div>
+      <button class="sheet-x" data-act="close" aria-label="Close"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
+      <div class="sheet-body" id="sheetBody"></div>
+    </section>
+    <div class="search" id="search" hidden>
+      <div class="sbar">
+        <label class="sfield"><svg viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="M15.5 15.5 21 21"/></svg>
+          <input id="fq" type="search" placeholder="A place, or coordinates" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" enterkeyhint="go" aria-label="Find a place">
+          <button class="sclear" id="sclear" type="button" aria-label="Clear" hidden><svg viewBox="0 0 24 24"><path d="M7 7l10 10M17 7 7 17"/></svg></button></label>
+        <button class="scancel" id="scancel" type="button">Cancel</button>
+      </div>
+      <div class="sres" id="results"></div>
+    </div>
     <div class="toasts" id="toasts"></div>
     <input type="file" id="pickPhotos" accept="image/*" multiple hidden>
     <input type="file" id="pickBackup" accept=".gz,.json,application/json,application/gzip" hidden>
