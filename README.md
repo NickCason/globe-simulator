@@ -1,8 +1,8 @@
-# Globe Simulator
+# Terralogue
 
 A visual journal of the world, kept on a hand-drawn globe. Pick any place, from somewhere you're standing to somewhere you've only read about, and keep notes, photos and posts about it. It builds into your own knowledge base of the world, one place at a time.
 
-**Live:** https://nickcason.github.io/globe-simulator/ (add it to your home screen; it works offline)
+**Live:** https://terralogue.app (add it to your home screen; it works offline). The repo is `globe-simulator`.
 
 ## What it does
 

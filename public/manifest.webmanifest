@@ -1,7 +1,7 @@
 {
   "id": "./",
-  "name": "Globe Simulator",
-  "short_name": "Globe",
+  "name": "Terralogue",
+  "short_name": "Terralogue",
   "description": "A visual journal of the world on a hand-drawn globe. Pin photos, notes and posts to any place; everything stays on your device.",
   "start_url": "./",
   "scope": "./",

@@ -109,7 +109,7 @@ export async function importAll(file) {
   const gz = head[0] === 0x1f && head[1] === 0x8b
   const text = gz ? await new Response(file.stream().pipeThrough(new DecompressionStream('gzip'))).text() : await file.text()
   const data = JSON.parse(text)
-  if (data.app !== 'globe-simulator') throw new Error('That isn’t a Globe Simulator backup.')
+  if (data.app !== 'globe-simulator') throw new Error('That isn’t a Terralogue backup.')
   let n = 0
   for (const p of data.photos || []) { await photos.put({ ...p, blob: unb64(p.blob), thumb: unb64(p.thumb) }) }
   for (const p of data.places || []) {

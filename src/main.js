@@ -1,4 +1,4 @@
-// Globe Simulator: a visual journal of the world. Pin photos, notes and posts to any place on a hand-drawn globe.
+// Terralogue (globe-simulator): a visual journal of the world. Pin photos, notes and posts to any place on a hand-drawn globe.
 // Everything stays on this device (src/store.js).
 import { create } from './globe.js'
 import { openStreets } from './streetmap.js'
@@ -478,7 +478,7 @@ const ACT = {
   export: async () => {
     toast('Packing up your journal…', 2000)
     const blob = await store.exportAll(), a = document.createElement('a')
-    a.href = URL.createObjectURL(blob); a.download = `globe-journal-${today()}.json${blob.type === 'application/gzip' ? '.gz' : ''}`
+    a.href = URL.createObjectURL(blob); a.download = `terralogue-${today()}.json${blob.type === 'application/gzip' ? '.gz' : ''}`
     document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 30000)
   },
   import: () => $('#pickBackup').click(),
