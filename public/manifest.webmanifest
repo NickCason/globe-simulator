@@ -1,0 +1,18 @@
+{
+  "id": "./",
+  "name": "Globe Simulator",
+  "short_name": "Globe",
+  "description": "A visual journal of the world on a hand-drawn globe. Pin photos, notes and posts to any place; everything stays on your device.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#F3E8D2",
+  "theme_color": "#F3E8D2",
+  "categories": ["travel", "lifestyle", "photo"],
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
