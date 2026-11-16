@@ -56,7 +56,8 @@ self.addEventListener('fetch', (e) => {
 // base './' so the built site works from any folder, including a GitHub Pages project path
 export default defineConfig({
   base: './',
-  build: { target: 'es2020', chunkSizeWarningLimit: 900 },
+  // lab/: drafts of things to come, built alongside the app (not linked from it)
+  build: { target: 'es2020', chunkSizeWarningLimit: 900, rollupOptions: { input: { main: 'index.html', streets: 'lab/streets.html' } } },
   plugins: [serviceWorker()],
   server: { allowedHosts: true },
 })

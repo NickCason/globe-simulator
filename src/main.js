@@ -120,6 +120,8 @@ async function loadLayers() {                          // the map layers' data, 
       new Promise((ok, no) => { const i = new Image(); i.onload = () => ok(i); i.onerror = no; i.src = 'data/countries.png' })])
     S.g.setOverlay(data, img); S.g.setLayers(S.look.layers)
     S.overlay = data; S.countryImg = img
+    // closer-in detail (states and provinces, cities), after everything else
+    fetch('data/detail.json').then(r => r.json()).then(d => S.g.setDetail(d)).catch(() => {})
   } catch { /* offline on the very first visit: the layers arrive next time */ }
 }
 function pins() {
@@ -732,6 +734,7 @@ function mapSheet() {
         <div class="sws">${sw('data-layer', 'borderDash', 'Dashed borders', L.borderDash)}</div></div></section>
     <section class="group"><h3>Labels</h3>
       <div class="sws">${sw('data-layer', 'continentLabels', 'Continents', L.continentLabels)}${sw('data-layer', 'countryLabels', 'Countries', L.countryLabels)}
+        ${sw('data-layer', 'states', 'States & provinces', L.states)}${sw('data-layer', 'cities', 'Cities', L.cities)}
         ${sw('data-layer', 'regionLabels', 'Ranges, deserts…', L.regionLabels)}${sw('data-layer', 'rivers', 'Rivers', L.rivers)}</div>
       <span class="lbl">Seas</span>${seg('seaLabels', [['off', 'Off'], ['oceans', 'Oceans'], ['seas', 'Oceans & seas']], L.seaLabels)}
       ${r('ls', 'Label size', 0.7, 1.6, 0.05)}${r('dn', 'How many labels', -1, 2, 0.5)}</section>

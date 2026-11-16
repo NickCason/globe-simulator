@@ -34,6 +34,8 @@ export const LAYERS = {
   borderDash: false,     // every border dashed (disputed ones always are)
   countryLabels: true,
   continentLabels: true,
+  states: true,          // states and provinces (lines and names), as you come closer (setDetail)
+  cities: true,          // cities, the biggest first, smaller ones as you come closer (setDetail)
   seaLabels: 'oceans',   // 'off' | 'oceans' | 'seas' (oceans, seas, gulfs, bays…)
   regionLabels: false,   // mountain ranges, deserts, plateaus, basins, island groups…
   rivers: false,
@@ -154,7 +156,10 @@ void main() {
   float ripple = pen(coast * 7.0 + wob * 0.3, 0.8) * (1.0 - smoothstep(0.1, 0.5, coast)) * (1.0 - land);
   ink = max(ink, 0.42 * ripple * uWaterOn);                                // water-lining
 
-  float shade = clamp((1.0 - lit) * 1.15 + rim * 0.25 - 0.18, 0.0, 1.0);    // the globe's own shadow side
+  // the globe's own shadow side: a whole-globe effect, so it eases away as you come down close (well below the app's
+  // nearest view today; streets on the globe go that low)
+  float far = 1.0 - smoothstep(8000.0, 30000.0, uPx);
+  float shade = clamp(((1.0 - lit) * 1.15 + rim * 0.25 - 0.18) * far, 0.0, 1.0);
   shade = max(shade, under * 0.5);
   float hw = 0.8;
   float h1 = strokes(vec3(1.0, 0.85, 0.35), uPx, hw, wob * 0.4) * smoothstep(0.28, 0.40, shade);
@@ -237,7 +242,7 @@ export async function create(el, options = {}) {
   let fit = 4, W = 1, H = 1, accent = '#B4532F', inkCss = '#2B231D', paperCss = '#F3E8D2'
   let pins = [], routes = [], spin = opt.spin && !opt.calm, vel = { lat: 0, lon: 0 }, flying = null, dragging = false, alive = true
   let boilT = 0, needs = true, ready = false
-  let layers = { ...LAYERS }, mapData = null, lifted = null, water = '#4A7A96'   // map layers (see setLayers)
+  let layers = { ...LAYERS }, mapData = null, detail = null, lifted = null, water = '#4A7A96'   // map layers (see setLayers)
 
   function set(o) {                          // change the look while it runs
     Object.assign(opt, o)
@@ -295,6 +300,8 @@ export async function create(el, options = {}) {
   function place() {
     globe.rotation.set(view.lat * D2R, Math.PI / 2 - (view.lon + 180) * D2R, 0, 'XYZ')
     camera.position.set(0, 0, view.dist); camera.lookAt(0, 0, 0)
+    const near = Math.min(0.01, Math.max(1e-7, (view.dist - 1) * 0.25))      // a few km up, 0.01 would clip the ground
+    if (camera.near !== near) { camera.near = near; camera.updateProjectionMatrix() }
     uniforms.uCamPos.value.copy(camera.position)
     uniforms.uPx.value = (H / 2) / Math.tan(camera.fov * D2R / 2) / (view.dist - 1)    // px per unit at the nearest point
     globe.updateMatrixWorld()
@@ -414,6 +421,10 @@ export async function create(el, options = {}) {
     lifted = null; paintPalette(); needs = true
   }
   function setLayers(o) { layers = { ...layers, ...o }; paintPalette(); needs = true }
+  // Closer-in detail (public/data/detail.json): states and provinces, and cities. Natural Earth gives each the web-map
+  // zoom it belongs at; the globe's own scale (1 = the whole world on a phone) runs about one step behind that.
+  const nz = z => z - 1
+  function setDetail(d) { detail = d; lifted = null; needs = true }
   function lift() {                          // every line and label, as points on (just above) the ground
     const line = (flat, up) => {
       const out = new Float32Array(flat.length / 2 * 3)
@@ -432,13 +443,17 @@ export async function create(el, options = {}) {
     }
     for (const c of mapData.countries) labels.push({ t: c[0].toUpperCase(), kind: 'country', min: Math.max(1.4, c[9]), v: at(c[7], c[8]), pri: 2 + c[6] / 10, rank: c[6] })
     for (const [n, cls, rank, min, lat, lon] of mapData.regions) labels.push({ t: n, kind: 'region', min: Math.max(2.4, min), v: at(lat, lon), pri: 5 + rank, cls })
+    for (const [n, z, lat, lon] of detail?.stateNames || []) labels.push({ t: n.toUpperCase(), kind: 'state', min: Math.max(1.8, nz(z)), v: at(lat, lon), pri: 4.2 + z / 10 })
+    for (const [n, z, lat, lon, pop, cap] of detail?.cities || []) labels.push({ t: n, kind: 'city', min: Math.max(1.4, nz(z)), v: at(lat, lon), pri: 2.6 + z / 3 - (cap ? 0.5 : 0), cap, pop })
     labels.sort((a, b) => a.pri - b.pri)
     lifted = { borders: mapData.borders.map(([kind, flat]) => ({ kind, p: line(flat, 0.003) })),
-               rivers: mapData.rivers.map(([n, min, flat]) => ({ min, p: line(flat, 0.002) })), labels }
+               rivers: mapData.rivers.map(([n, min, flat]) => ({ min, p: line(flat, 0.002) })),
+               states: (detail?.states || []).map(([z, flat]) => ({ min: Math.max(1.3, nz(z)), p: line(flat, 0.0028) })), labels }
   }
   function drawLayers() {
     if (!mapData) return
-    const showBorders = layers.countries !== 'off', anyLabels = layers.countryLabels || layers.continentLabels || layers.seaLabels !== 'off' || layers.regionLabels
+    const showBorders = layers.countries !== 'off'
+    const anyLabels = layers.countryLabels || layers.continentLabels || layers.seaLabels !== 'off' || layers.regionLabels || layers.states || layers.cities
     if (!showBorders && !layers.rivers && !anyLabels) return
     if (!lifted) lift()
     const e = new Float32Array(16)
@@ -468,6 +483,15 @@ export async function create(el, options = {}) {
       g2.strokeStyle = water; g2.globalAlpha = 0.75; g2.lineWidth = 1.1
       strokeLines(lifted.rivers, r => r.min <= zl + 3 + layers.density)
     }
+    if (layers.states && lifted.states.length) {          // states and provinces: fainter, dashed, fading in as you come closer
+      g2.strokeStyle = inkCss; g2.lineWidth = Math.max(0.6, layers.borderWidth * 0.6); g2.setLineDash([4, 3])
+      for (const step of [0, 1, 2]) {                     // three fade steps, so each stroke call keeps one alpha
+        const lo = step * 0.25, hi = lo + 0.25
+        g2.globalAlpha = layers.borderAlpha * 0.55 * (lo + hi) / 2 * 1.6
+        strokeLines(lifted.states, b => { const f = (zl + 0.3 + layers.density - b.min) / 0.6; return f > lo && (f <= hi || step === 2) })
+      }
+      g2.setLineDash([])
+    }
     if (showBorders) {
       g2.strokeStyle = inkCss; g2.globalAlpha = layers.borderAlpha; g2.lineWidth = layers.borderWidth
       g2.setLineDash(layers.borderDash ? [5, 4] : []); strokeLines(lifted.borders, b => b.kind === 0)
@@ -484,16 +508,39 @@ export async function create(el, options = {}) {
       if (L.kind === 'country' && !layers.countryLabels) continue
       if ((L.kind === 'ocean' && layers.seaLabels === 'off') || (L.kind === 'sea' && layers.seaLabels !== 'seas')) continue
       if (L.kind === 'region' && !layers.regionLabels) continue
+      if ((L.kind === 'state' && !layers.states) || (L.kind === 'city' && !layers.cities)) continue
       if (L.min > zl + 0.6 + layers.density) continue
+      const ripe = Math.min(1, (zl + 0.6 + layers.density - L.min) / 0.5)        // fades in as you come closer
       const v = L.v, front = R[2] * v.x + R[6] * v.y + R[10] * v.z
       if (front < 0.3) continue
       const w = M[3] * v.x + M[7] * v.y + M[11] * v.z + M[15]
       const x = ((M[0] * v.x + M[4] * v.y + M[8] * v.z + M[12]) / w + 1) / 2 * W, y = (1 - (M[1] * v.x + M[5] * v.y + M[9] * v.z + M[13]) / w) / 2 * H
-      let font, color = inkCss, spacing = '0px', alpha = Math.min(1, (front - 0.3) * 5)
+      let font, color = inkCss, spacing = '0px', alpha = Math.min(1, (front - 0.3) * 5) * ripe
       if (L.kind === 'continent') { font = `600 ${15 * k}px ${SANS}`; spacing = `${4 * k}px`; alpha *= 0.55 * Math.min(1, (L.max - zl) * 2) }
       else if (L.kind === 'ocean') { font = `italic ${15 * k}px ${SERIF}`; color = water; spacing = `${3 * k}px` }
       else if (L.kind === 'sea') { font = `italic ${12 * k}px ${SERIF}`; color = water }
       else if (L.kind === 'country') { font = `650 ${(L.rank <= 2 ? 12 : L.rank <= 4 ? 11 : 10) * k}px ${SANS}`; spacing = `${1 * k}px` }
+      else if (L.kind === 'state') { font = `600 ${9.5 * k}px ${SANS}`; spacing = `${1.6 * k}px`; alpha *= 0.55 }
+      else if (L.kind === 'city') {
+        // a dot (a ring for a capital) with the name beside it; the right side first, else the left
+        font = `${L.cap ? 650 : 500} ${(L.cap ? 12 : L.pop > 1000 ? 11.5 : 11) * k}px ${SANS}`
+        g2.font = font; if ('letterSpacing' in g2) g2.letterSpacing = '0px'
+        const tw = g2.measureText(L.t).width, th = 12 * k, r = (L.cap ? 3.4 : 2.4) * zs
+        let side = 0
+        for (const s of [1, -1]) {
+          const bx = s > 0 ? [x - r - 1, y - th / 2 - 1, x + r + 4 + tw + 2, y + th / 2 + 1] : [x - r - 4 - tw - 2, y - th / 2 - 1, x + r + 1, y + th / 2 + 1]
+          if (!placed.some(b => b[0] < bx[2] && bx[0] < b[2] && b[1] < bx[3] && bx[1] < b[3])) { side = s; placed.push(bx); break }
+        }
+        if (!side) continue
+        g2.globalAlpha = alpha
+        g2.beginPath(); g2.arc(x, y, r + 1.4, 0, Math.PI * 2); g2.fillStyle = paperCss; g2.fill()
+        g2.beginPath(); g2.arc(x, y, r, 0, Math.PI * 2); g2.fillStyle = inkCss; g2.fill()
+        if (L.cap) { g2.beginPath(); g2.arc(x, y, r * 0.45, 0, Math.PI * 2); g2.fillStyle = paperCss; g2.fill() }
+        g2.textAlign = side > 0 ? 'left' : 'right'; g2.textBaseline = 'middle'
+        const tx = x + side * (r + 4)
+        g2.lineWidth = 3 * zs; g2.strokeStyle = paperCss; g2.strokeText(L.t, tx, y); g2.fillStyle = inkCss; g2.fillText(L.t, tx, y)
+        continue
+      }
       else { font = `italic ${11 * k}px ${SERIF}`; color = inkCss; alpha *= 0.75 }
       g2.font = font; if ('letterSpacing' in g2) g2.letterSpacing = spacing
       const tw = g2.measureText(L.t).width, th = parseFloat(font.match(/(\d+(\.\d+)?)px/)[1])
@@ -717,7 +764,7 @@ export async function create(el, options = {}) {
     const prev = pts.get(e.pointerId); pts.set(e.pointerId, [e.clientX, e.clientY])
     if (pts.size === 2 && pinch0) {
       const [a, b] = [...pts.values()]
-      const want = pinch0.dist * pinch0.d / Math.max(20, Math.hypot(a[0] - b[0], a[1] - b[1]))
+      const want = 1 + (pinch0.dist - 1) * pinch0.d / Math.max(20, Math.hypot(a[0] - b[0], a[1] - b[1]))
       if (want < opt.minDist * 0.93 && opt.onDive) { pts.clear(); pinch0 = null; dragging = false; return opt.onDive({ lat: view.lat, lon: view.lon }) }
       view.dist = Math.max(opt.minDist, Math.min(fit * 1.25, want))
     } else {
@@ -760,11 +807,13 @@ export async function create(el, options = {}) {
     e.preventDefault(); spin = false
     if (e.deltaY < 0 && view.dist <= opt.minDist * 1.005 && opt.onDive) { if (++press >= 3) { press = 0; opt.onDive({ lat: view.lat, lon: view.lon }) } return }
     press = 0
-    view.dist = Math.max(opt.minDist, Math.min(fit * 1.25, view.dist * (e.deltaY > 0 ? 1.08 : 0.93))); needs = true
+    view.dist = Math.max(opt.minDist, Math.min(fit * 1.25, 1 + (view.dist - 1) * (e.deltaY > 0 ? 1.12 : 0.89))); needs = true
   }, { passive: false })
 
   return {
-    set, setTheme, setPins, flyTo, route, clearRoutes, settle, pick, setOverlay, setLayers,
+    set, setTheme, setPins, flyTo, route, clearRoutes, settle, pick, setOverlay, setLayers, setDetail,
+    addObject(o) { globe.add(o); needs = true; return () => { globe.remove(o); needs = true } },
+    groundAt: (lat, lon) => ground(lat, lon), redraw() { needs = true },
     layers: () => ({ ...layers }),
     pause() { paused = true }, resume() { paused = false; needs = true },
     drawn: () => drawn,                               // resolves once the first frame is on screen
